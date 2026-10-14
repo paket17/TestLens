@@ -1,0 +1,289 @@
+<UserControl x:Class="TestLens.Vsix.ToolWindows.TestLensToolWindowControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:vsshell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+             mc:Ignorable="d" 
+             d:DesignHeight="600" d:DesignWidth="850"
+             Background="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowBackgroundKey}}"
+             Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Selectable Text Style (looks like TextBlock, allows mouse selection & Ctrl+C) -->
+        <Style x:Key="SelectableText" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Cursor" Value="IBeam"/>
+            <Setter Property="SelectionBrush" Value="#403b82f6"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- Flat VS-styled Button -->
+        <Style x:Key="VsFlatButton" TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsshell:VsBrushes.CommandBarGradientBeginKey}}"/>
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsshell:VsBrushes.CommandBarBorderKey}}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="7,3"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource {x:Static vsshell:VsBrushes.CommandBarHoverKey}}"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource {x:Static vsshell:VsBrushes.CommandBarSelectedBorderKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{DynamicResource {x:Static vsshell:VsBrushes.CommandBarSelectedKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Primary Accent Button -->
+        <Style x:Key="VsPrimaryButton" TargetType="Button" BasedOn="{StaticResource VsFlatButton}">
+            <Setter Property="Background" Value="#2563eb"/>
+            <Setter Property="Foreground" Value="#ffffff"/>
+            <Setter Property="BorderBrush" Value="#1d4ed8"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- TOP PANEL: TARGET METHOD & ACTIONS ON LEFT, STATUS BADGE ON RIGHT -->
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- LEFT: ACTION BUTTONS AND METHOD INFO -->
+            <Border Grid.Column="0" BorderBrush="{DynamicResource {x:Static vsshell:VsBrushes.ComboBoxBorderKey}}" 
+                    BorderThickness="1" CornerRadius="4" Padding="10,8" Margin="0,0,8,0"
+                    Background="{DynamicResource {x:Static vsshell:VsBrushes.ComboBoxBackgroundKey}}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Buttons shifted to the LEFT -->
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                        <Button x:Name="BtnRunAll" Content="▶ Run All" Click="BtnRunAll_Click" 
+                                Style="{StaticResource VsPrimaryButton}" Padding="10,3" Margin="0,0,6,0"/>
+                        <Button x:Name="BtnRefresh" Content="{Binding RefreshButtonText, FallbackValue='🔄 Refresh'}" 
+                                ToolTip="{Binding RefreshButtonToolTip, FallbackValue='Refresh covering tests'}"
+                                Click="BtnRefresh_Click" 
+                                Style="{StaticResource VsFlatButton}" Padding="8,3"/>
+                    </StackPanel>
+
+                    <!-- Target method name -->
+                    <TextBox Grid.Row="1" Text="{Binding TargetMethodFqn, Mode=OneWay, FallbackValue='Select a method in code'}" 
+                             Style="{StaticResource SelectableText}"
+                             FontSize="12" FontWeight="Bold" Margin="0,0,0,2"
+                             ToolTip="{Binding TargetMethodFqn}"/>
+
+                    <!-- Target location -->
+                    <TextBox Grid.Row="2" Text="{Binding TargetLocation, Mode=OneWay, FallbackValue=''}" 
+                             Style="{StaticResource SelectableText}"
+                             FontSize="11" Opacity="0.65"
+                             ToolTip="{Binding TargetLocation}"/>
+                </Grid>
+            </Border>
+
+            <!-- RIGHT: STATUS BADGE (Fixed height, narrower, neutral when undetermined) -->
+            <Border Grid.Column="1" CornerRadius="4" Padding="12,8"
+                    MinWidth="180" MaxWidth="260" MinHeight="68"
+                    BorderThickness="1"
+                    BorderBrush="{Binding StatusBadgeBorderBrush}"
+                    Background="{Binding StatusBadgeBackground}">
+
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="4"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" VerticalAlignment="Center">
+                        <TextBlock Text="Status:" FontSize="10" Opacity="0.7" Margin="0,0,0,2"
+                                   Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+                        <TextBlock Text="{Binding StatusText}" FontWeight="Bold" FontSize="12" TextWrapping="Wrap"
+                                   Foreground="{Binding StatusTextColor}"/>
+                    </StackPanel>
+
+                    <!-- Progress bar in a fixed 4px row so height never jumps -->
+                    <ProgressBar Grid.Row="1" IsIndeterminate="True" Height="3" VerticalAlignment="Center"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}"/>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- TESTS LIST / TREEVIEW -->
+        <TreeView Grid.Row="1" ItemsSource="{Binding Tests}" 
+                  MouseDoubleClick="TreeView_MouseDoubleClick"
+                  PreviewMouseWheel="TreeView_PreviewMouseWheel"
+                  Background="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowBackgroundKey}}"
+                  Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"
+                  BorderBrush="{DynamicResource {x:Static vsshell:VsBrushes.ComboBoxBorderKey}}"
+                  BorderThickness="1">
+
+            <!-- System color overrides to prevent double-click / selection whiteout in dark theme -->
+            <TreeView.Resources>
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#253b82f6"/>
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#ffffff"/>
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#183b82f6"/>
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#ffffff"/>
+
+                <Style TargetType="TreeViewItem">
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="Padding" Value="2"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Style.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="#253b82f6"/>
+                            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#0cffffff"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </TreeView.Resources>
+
+            <TreeView.ItemTemplate>
+                <HierarchicalDataTemplate ItemsSource="{Binding Chains}">
+                    <!-- Test Item Row: Buttons placed on the LEFT of the test name -->
+                    <Border Padding="6,4" Margin="0,2">
+                        <Border.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Copy Test Name" Click="MenuCopyTestName_Click"/>
+                                <MenuItem Header="Copy Fully Qualified Name" Click="MenuCopyTestFqn_Click"/>
+                                <MenuItem Header="Copy File Path" Click="MenuCopyTestFilePath_Click"/>
+                            </ContextMenu>
+                        </Border.ContextMenu>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 1. Run button on the left -->
+                            <Button Grid.Column="0" Content="▶ Run" Click="BtnRunSingleTest_Click" 
+                                    Style="{StaticResource VsFlatButton}" Padding="7,2" Margin="0,0,4,0" 
+                                    FontWeight="SemiBold" FontSize="11"/>
+
+                            <!-- 2. Go to code button on the left -->
+                            <Button Grid.Column="1" Content="Go to code" Click="BtnNavigateTest_Click" 
+                                    Style="{StaticResource VsFlatButton}" Padding="7,2" Margin="0,0,8,0" FontSize="11"/>
+
+                            <!-- 3. Status Icon -->
+                            <TextBlock Grid.Column="2" Text="{Binding StatusIcon}" Margin="0,0,6,0" FontSize="13" 
+                                       VerticalAlignment="Center"/>
+
+                            <!-- 4. Test Name + Framework + Depth (Selectable & Ellipsis) -->
+                            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBox Text="{Binding DisplayName, Mode=OneWay}" FontWeight="Bold" 
+                                         Style="{StaticResource SelectableText}"
+                                         ToolTip="{Binding FullyQualifiedName}"/>
+                                <Border Background="#203b82f6" CornerRadius="3" Padding="4,1" Margin="8,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Framework}" FontSize="10" Foreground="#2563eb"/>
+                                </Border>
+                                <TextBlock Text="{Binding DepthText}" FontSize="11" Opacity="0.7" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+                            </StackPanel>
+
+                            <!-- 5. Test Run Status Badge (Passed / Failed) -->
+                            <TextBlock Grid.Column="4" Text="{Binding StatusBadgeText}" FontWeight="SemiBold" 
+                                       Foreground="{Binding StatusColor}" FontSize="11" Margin="8,0,4,0" 
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Chain Item Template -->
+                    <HierarchicalDataTemplate.ItemTemplate>
+                        <HierarchicalDataTemplate ItemsSource="{Binding Steps}">
+                            <TextBlock Text="└─ Call chain:" FontStyle="Italic" Opacity="0.7" Margin="0,2"
+                                       Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+
+                            <!-- Step Item Template -->
+                            <HierarchicalDataTemplate.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Padding="4,2">
+                                        <Border.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Copy Step Call" Click="MenuCopyStepCall_Click"/>
+                                                <MenuItem Header="Copy Location" Click="MenuCopyStepLocation_Click"/>
+                                            </ContextMenu>
+                                        </Border.ContextMenu>
+
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="├─ " Opacity="0.4" FontFamily="Consolas"
+                                                       Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+                                            <TextBox Text="{Binding CallerName, Mode=OneWay}" FontWeight="SemiBold"
+                                                     Style="{StaticResource SelectableText}" ToolTip="{Binding CallerName}"/>
+                                            <TextBlock Text=" ➔ " Opacity="0.6"
+                                                       Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+                                            <TextBox Text="{Binding CalleeName, Mode=OneWay}"
+                                                     Style="{StaticResource SelectableText}" ToolTip="{Binding CalleeName}"/>
+                                            <TextBlock Text="{Binding StepKind}" Foreground="#d97706" Margin="6,0"/>
+                                            <TextBox Text="{Binding Location, Mode=OneWay}" Opacity="0.65" Margin="8,0" 
+                                                     FontFamily="Consolas" FontSize="10"
+                                                     Style="{StaticResource SelectableText}" ToolTip="{Binding Location}"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </HierarchicalDataTemplate.ItemTemplate>
+                        </HierarchicalDataTemplate>
+                    </HierarchicalDataTemplate.ItemTemplate>
+                </HierarchicalDataTemplate>
+            </TreeView.ItemTemplate>
+        </TreeView>
+
+        <!-- FOOTER BAR -->
+        <StatusBar Grid.Row="2" Margin="0,5,0,0" Background="Transparent">
+            <StatusBarItem>
+                <TextBox Text="{Binding ElapsedTimeText, Mode=OneWay}" FontSize="11"
+                         Style="{StaticResource SelectableText}"
+                         Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock Text="TestLens (Roslyn Call Graph)" FontSize="11" Opacity="0.65"
+                           Foreground="{DynamicResource {x:Static vsshell:VsBrushes.ToolWindowTextKey}}"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</UserControl>

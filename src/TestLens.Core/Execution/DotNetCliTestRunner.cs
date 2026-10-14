@@ -46,7 +46,7 @@ public sealed class DotNetCliTestRunner(
                 Success = true,
                 PassedCount = 0,
                 Duration = TimeSpan.Zero,
-                StandardOutput = "Нет тестов для запуска."
+                StandardOutput = "No tests to run."
             };
         }
 
@@ -60,10 +60,17 @@ public sealed class DotNetCliTestRunner(
         if (request.NoBuild)
             args.Append("--no-build ");
 
+        var workingDir = File.Exists(request.SolutionOrProjectPath)
+            ? Path.GetDirectoryName(request.SolutionOrProjectPath)
+            : Directory.Exists(request.SolutionOrProjectPath)
+                ? request.SolutionOrProjectPath
+                : string.Empty;
+
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
             Arguments = args.ToString(),
+            WorkingDirectory = workingDir ?? string.Empty,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -73,9 +80,10 @@ public sealed class DotNetCliTestRunner(
         var outputBuilder = new StringBuilder();
         var stopwatch = Stopwatch.StartNew();
 
+        using var process = new Process { StartInfo = startInfo };
+
         try
         {
-            using var process = new Process { StartInfo = startInfo };
             using var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cancellationTokenSource.CancelAfter(request.Timeout);
 
@@ -125,6 +133,13 @@ public sealed class DotNetCliTestRunner(
         }
         catch (OperationCanceledException)
         {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill();
+            }
+            catch { }
+
             stopwatch.Stop();
             return new TestRunResult
             {
@@ -148,21 +163,17 @@ public sealed class DotNetCliTestRunner(
         }
     }
 
-    /// <summary>
-    /// Собирает фильтр VSTest для dotnet test: FullyQualifiedName=Test1|FullyQualifiedName=Test2
-    /// </summary>
     private static string BuildFilter(IReadOnlyList<TestMethodDescriptor> tests)
     {
-        // Исключаем спецсимволы в FQN если необходимо
         var filterExpressions = tests
-            .Select(t => $"FullyQualifiedName={t.FullyQualifiedName}");
+            .Select(t => $"FullyQualifiedName~{t.FullyQualifiedName}");
 
         return string.Join("|", filterExpressions);
     }
 
     /// <summary>
-    /// Извлекает статистику из консольного вывода dotnet test.
-    /// Например: "Passed: 3, Failed: 0, Skipped: 0"
+    /// Parses test execution summary from dotnet test console output.
+    /// Example: "Passed: 3, Failed: 0, Skipped: 0"
     /// </summary>
     private static (int Passed, int Failed, int Skipped) ParseSummary(string output)
     {
@@ -170,7 +181,6 @@ public sealed class DotNetCliTestRunner(
         var failed = 0;
         var skipped = 0;
 
-        // Поиск Passed! - Failed: 0, Passed: 3, Skipped: 0
         var passedMatch = Regex.Match(output, @"Passed:\s*(\d+)", RegexOptions.IgnoreCase);
         if (passedMatch.Success && int.TryParse(passedMatch.Groups[1].Value, out var p))
             passed = p;
@@ -182,6 +192,9 @@ public sealed class DotNetCliTestRunner(
         var skippedMatch = Regex.Match(output, @"Skipped:\s*(\d+)", RegexOptions.IgnoreCase);
         if (skippedMatch.Success && int.TryParse(skippedMatch.Groups[1].Value, out var s))
             skipped = s;
+
+        if (passed == 0 && failed == 0 && output.Contains("Passed!"))
+            passed = 1;
 
         return (passed, failed, skipped);
     }

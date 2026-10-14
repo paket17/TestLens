@@ -20,10 +20,20 @@ public sealed class RoslynInvertedCallGraphWalker(
     private readonly ITestDetector _testDetector = 
         testDetector ?? throw new ArgumentNullException(nameof(testDetector));
 
+    public Task<MethodCoverageResult> FindCoveringTestsAsync(
+        Solution solution,
+        IMethodSymbol targetMethod,
+        CoverageSearchOptions options,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        FindCoveringTestsAsync(solution, targetMethod, options, progress, null, cancellationToken);
+
     public async Task<MethodCoverageResult> FindCoveringTestsAsync(
         Solution solution,
         IMethodSymbol targetMethod,
         CoverageSearchOptions options,
+        IProgress<string>? progress,
+        IProgress<CoveringTestMatch>? onTestFound,
         CancellationToken cancellationToken = default)
     {
         CompatExtensions.ThrowIfNull(solution, nameof(solution));
@@ -33,7 +43,7 @@ public sealed class RoslynInvertedCallGraphWalker(
         var stopwatch = Stopwatch.StartNew();
         var diagnostics = new List<string>();
 
-        // Извлекаем метаданные целевого метода
+        // Target method metadata
         var targetLocation = targetMethod.Locations.FirstOrDefault(l => l.IsInSource);
         var targetLineSpan = targetLocation?.GetLineSpan();
         var targetFilePath = targetLineSpan?.Path;
@@ -44,13 +54,17 @@ public sealed class RoslynInvertedCallGraphWalker(
             ? $"{targetMethod.ContainingType.ToDisplayString()}.{targetMethod.Name}"
             : targetMethod.Name;
 
-        // Словарь найденных тестов: FQN теста -> Список цепочек вызовов
+        // Discovered tests: FQN -> (Descriptor, Chains)
         var foundTests = new Dictionary<string, (TestMethodDescriptor Descriptor, List<CallChain> Chains)>(StringComparer.OrdinalIgnoreCase);
 
-        // Очередь для BFS поиска (обратный поиск от целевого метода)
-        var queue = new Queue<PathNode>();
+        // Tracks minimum depth each method was visited to eliminate exponential graph explosion
+        var minDepthByMethod = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default)
+        {
+            [targetMethod] = 0
+        };
 
-        // Начальный узел (целевой метод, 0 шагов)
+        // BFS queue for reverse call graph traversal
+        var queue = new Queue<PathNode>();
         queue.Enqueue(new PathNode
         {
             CurrentMethod = targetMethod,
@@ -58,22 +72,31 @@ public sealed class RoslynInvertedCallGraphWalker(
             VisitedSymbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { targetMethod }
         });
 
+        var exploredCount = 0;
+
         while (queue.Count > 0)
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                diagnostics.Add("Поиск был прерван по запросу пользователя.");
+                diagnostics.Add("Search was interrupted by user request or timeout.");
                 break;
             }
 
             var currentNode = queue.Dequeue();
             var currentDepth = currentNode.StepsFromCurrentToTarget.Count;
 
-            // Если достигли максимальной глубины - глубже не идем
             if (currentDepth >= options.MaxCallDepth)
                 continue;
 
-            // Находим всех вызывающих для текущего метода
+            exploredCount++;
+            if (exploredCount > options.MaxExploredMethods)
+            {
+                diagnostics.Add($"Explored limit ({options.MaxExploredMethods} methods) reached. Search completed.");
+                break;
+            }
+
+            progress?.Report($"Depth {currentDepth + 1}/{options.MaxCallDepth} | Checked {exploredCount} methods | Found {foundTests.Count} test(s)...");
+
             IReadOnlyList<DiscoveredCaller> callers;
             try
             {
@@ -85,13 +108,13 @@ public sealed class RoslynInvertedCallGraphWalker(
             }
             catch (OperationCanceledException)
             {
-                diagnostics.Add("Поиск был отменен.");
+                diagnostics.Add("Search was canceled.");
                 break;
             }
             catch (Exception ex)
             {
-                logger?.LogWarning(ex, "Ошибка при поиске вызывающих для {Symbol}", currentNode.CurrentMethod.ToDisplayString());
-                diagnostics.Add($"Ошибка анализа для {currentNode.CurrentMethod.Name}: {ex.Message}");
+                logger?.LogWarning(ex, "Error finding callers for symbol {Symbol}", currentNode.CurrentMethod.ToDisplayString());
+                diagnostics.Add($"Analysis error for {currentNode.CurrentMethod.Name}: {ex.Message}");
                 continue;
             }
 
@@ -100,11 +123,10 @@ public sealed class RoslynInvertedCallGraphWalker(
                 if (cancellationToken.IsCancellationRequested)
                     break;
 
-                // Предотвращение циклов (рекурсии) в текущей ветке
+                // Cycle prevention in current branch
                 if (currentNode.VisitedSymbols.Contains(caller.CallerSymbol))
                     continue;
 
-                // Создаем шаг вызова: Caller -> Callee
                 var step = new CallChainStep
                 {
                     CallerName = caller.CallerSymbol.Name,
@@ -117,14 +139,12 @@ public sealed class RoslynInvertedCallGraphWalker(
                     StepKind = caller.StepKind
                 };
 
-                // Новая цепочка шагов (добавляем шаг в начало, чтобы порядок был от корня к цели)
                 var updatedSteps = new List<CallChainStep> { step };
                 updatedSteps.AddRange(currentNode.StepsFromCurrentToTarget);
 
-                // Проверяем, является ли вызывающий метод тестовым методом
+                // Check if caller is a test method
                 if (_testDetector.TryGetTestDescriptor(caller.CallerSymbol, out var testDescriptor))
                 {
-                    // Проверка фильтра по проектам
                     if (options.TestProjectFilter != null &&
                         options.TestProjectFilter.Count > 0 &&
                         !options.TestProjectFilter.Contains(testDescriptor.ProjectName, StringComparer.OrdinalIgnoreCase))
@@ -146,14 +166,25 @@ public sealed class RoslynInvertedCallGraphWalker(
 
                     entry.Chains.Add(callChain);
 
+                    onTestFound?.Report(new CoveringTestMatch
+                    {
+                        TestMethod = testDescriptor,
+                        CallChains = new List<CallChain>(entry.Chains)
+                    });
+
                     if (options.MaxTestResults > 0 && foundTests.Count >= options.MaxTestResults)
                         break;
 
-                    // Если вызывающий является тестом, дальше по этой ветке не углубляемся
                     continue;
                 }
 
-                // Если метод не является тестом, продолжаем поиск вглубь (BFS)
+                // If non-test, check if we've already reached this method at a shorter or equal depth
+                var nextDepth = currentDepth + 1;
+                if (minDepthByMethod.TryGetValue(caller.CallerSymbol, out var prevMinDepth) && nextDepth >= prevMinDepth)
+                    continue;
+
+                minDepthByMethod[caller.CallerSymbol] = nextDepth;
+
                 var newVisited = new HashSet<ISymbol>(currentNode.VisitedSymbols, SymbolEqualityComparer.Default)
                 {
                     caller.CallerSymbol
@@ -163,7 +194,7 @@ public sealed class RoslynInvertedCallGraphWalker(
                 {
                     CurrentMethod = caller.CallerSymbol,
                     StepsFromCurrentToTarget = updatedSteps,
-                    VisitedSymbols = new HashSet<ISymbol>(newVisited, SymbolEqualityComparer.Default)
+                    VisitedSymbols = newVisited
                 });
             }
 

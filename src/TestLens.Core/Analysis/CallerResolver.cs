@@ -12,6 +12,9 @@ namespace TestLens.Core.Analysis;
 public sealed class CallerResolver(
     ILogger<CallerResolver>? logger = null) : ICallerResolver
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<ISymbol, IReadOnlyList<DiscoveredCaller>> _cache =
+        new(SymbolEqualityComparer.Default);
+
     public async Task<IReadOnlyList<DiscoveredCaller>> FindCallersAsync(
         Solution solution,
         IMethodSymbol targetMethod,
@@ -22,10 +25,13 @@ public sealed class CallerResolver(
         CompatExtensions.ThrowIfNull(targetMethod, nameof(targetMethod));
         CompatExtensions.ThrowIfNull(options, nameof(options));
 
+        if (_cache.TryGetValue(targetMethod, out var cached))
+            return cached;
+
         var results = new List<DiscoveredCaller>();
         var seenCallKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. Прямые вызовы метода
+        // 1. Direct callers of the method
         await CollectCallersForSymbolAsync(
             solution,
             targetMethod,
@@ -33,13 +39,21 @@ public sealed class CallerResolver(
             CallChainStepKind.DirectCall,
             results,
             seenCallKeys,
+            options,
             cancellationToken);
 
-        // 2. Вызовы через интерфейсы, которые реализует данный метод
-        if (options.FollowInterfaces)
+        // 2. Interface calls if method implements interfaces (excluding standard System interfaces)
+        if (options.FollowInterfaces && results.Count < options.MaxCallersPerMethod)
         {
             foreach (var ifaceMethod in GetImplementedInterfaceMethods(targetMethod))
             {
+                if (results.Count >= options.MaxCallersPerMethod)
+                    break;
+
+                var ns = ifaceMethod.ContainingNamespace?.ToDisplayString();
+                if (ns != null && (ns.StartsWith("System.") || ns == "System"))
+                    continue;
+
                 await CollectCallersForSymbolAsync(
                     solution,
                     ifaceMethod,
@@ -47,16 +61,26 @@ public sealed class CallerResolver(
                     CallChainStepKind.InterfaceDispatch,
                     results,
                     seenCallKeys,
+                    options,
                     cancellationToken);
             }
         }
 
-        // 3. Вызовы через базовые методы (virtual / abstract / override)
-        if (options.FollowOverrides && targetMethod.OverriddenMethod != null)
+        // 3. Virtual / abstract base method callers (excluding System.Object)
+        if (options.FollowOverrides && targetMethod.OverriddenMethod != null && results.Count < options.MaxCallersPerMethod)
         {
             var baseMethod = targetMethod.OverriddenMethod;
-            while (baseMethod != null)
+            var baseDepth = 0;
+            while (baseMethod != null && baseDepth < 2 && results.Count < options.MaxCallersPerMethod)
             {
+                var containingType = baseMethod.ContainingType;
+                if (containingType?.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType)
+                    break;
+
+                var ns = containingType?.ContainingNamespace?.ToDisplayString();
+                if (ns != null && (ns.StartsWith("System.") || ns == "System"))
+                    break;
+
                 await CollectCallersForSymbolAsync(
                     solution,
                     baseMethod,
@@ -64,12 +88,15 @@ public sealed class CallerResolver(
                     CallChainStepKind.VirtualOverrideDispatch,
                     results,
                     seenCallKeys,
+                    options,
                     cancellationToken);
 
                 baseMethod = baseMethod.OverriddenMethod;
+                baseDepth++;
             }
         }
 
+        _cache[targetMethod] = results;
         return results;
     }
 
@@ -80,32 +107,36 @@ public sealed class CallerResolver(
         CallChainStepKind stepKind,
         List<DiscoveredCaller> results,
         HashSet<string> seenCallKeys,
+        CoverageSearchOptions options,
         CancellationToken cancellationToken)
     {
         try
         {
+            var candidateDocs = GetCandidateDocuments(solution, symbolToFindCallersFor);
             var callers = await SymbolFinder.FindCallersAsync(
                 symbolToFindCallersFor,
                 solution,
-                cancellationToken).ConfigureAwait(false);
+                documents: candidateDocs,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             foreach (var callerInfo in callers)
             {
-                if (cancellationToken.IsCancellationRequested)
+                if (cancellationToken.IsCancellationRequested || results.Count >= options.MaxCallersPerMethod)
                     break;
 
                 var callerMethod = UnwrapToMethodSymbol(callerInfo.CallingSymbol);
                 if (callerMethod == null)
                     continue;
 
-                // Перебираем конкретные места вызова в коде
                 foreach (var location in callerInfo.Locations)
                 {
+                    if (results.Count >= options.MaxCallersPerMethod)
+                        break;
+
                     var lineSpan = location.GetLineSpan();
                     var filePath = lineSpan.Path;
                     var lineNumber = lineSpan.StartLinePosition.Line + 1;
 
-                    // Ключ дедупликации
                     var key = $"{callerMethod.ToDisplayString()}|{filePath}|{lineNumber}|{actualTargetCallee.ToDisplayString()}";
                     if (!seenCallKeys.Add(key))
                         continue;
@@ -137,8 +168,45 @@ public sealed class CallerResolver(
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(ex, "Ошибка при поиске вызовов для символа {Symbol}", symbolToFindCallersFor.ToDisplayString());
+            logger?.LogWarning(ex, "Error finding callers for symbol {Symbol}", symbolToFindCallersFor.ToDisplayString());
         }
+    }
+
+    /// <summary>
+    /// Ограничивает область поиска только проектами, зависящими от сборки целевого символа.
+    /// Это дает колоссальное ускорение в крупных решениях с сотнями проектов.
+    /// </summary>
+    private static System.Collections.Immutable.IImmutableSet<Document>? GetCandidateDocuments(
+        Solution solution,
+        IMethodSymbol symbol)
+    {
+        var assemblyName = symbol.ContainingAssembly?.Name;
+        if (string.IsNullOrEmpty(assemblyName))
+            return null;
+
+        var declaringProject = solution.Projects.FirstOrDefault(
+            p => string.Equals(p.AssemblyName, assemblyName, StringComparison.OrdinalIgnoreCase));
+        if (declaringProject == null)
+            return null;
+
+        var depGraph = solution.GetProjectDependencyGraph();
+        var dependentProjectIds = depGraph.GetProjectsThatTransitivelyDependOnThisProject(declaringProject.Id);
+
+        var docSet = new HashSet<Document>();
+        foreach (var doc in declaringProject.Documents)
+            docSet.Add(doc);
+
+        foreach (var depId in dependentProjectIds)
+        {
+            var depProject = solution.GetProject(depId);
+            if (depProject != null)
+            {
+                foreach (var doc in depProject.Documents)
+                    docSet.Add(doc);
+            }
+        }
+
+        return System.Collections.Immutable.ImmutableHashSet.ToImmutableHashSet(docSet);
     }
 
     /// <summary>

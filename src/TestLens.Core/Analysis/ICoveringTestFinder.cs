@@ -20,5 +20,17 @@ public interface ICoveringTestFinder
         Solution solution,
         IMethodSymbol targetMethod,
         CoverageSearchOptions options,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Выполняет поиск тестов с потоковым уведомлением о каждом найденном тесте.
+    /// </summary>
+    Task<MethodCoverageResult> FindCoveringTestsAsync(
+        Solution solution,
+        IMethodSymbol targetMethod,
+        CoverageSearchOptions options,
+        IProgress<string>? progress,
+        IProgress<CoveringTestMatch>? onTestFound,
         CancellationToken cancellationToken = default);
 }

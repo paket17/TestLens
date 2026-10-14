@@ -27,14 +27,14 @@ internal static class Program
         string? solutionPath = GetArgument(args, "--solution", "-s");
         string? methodName = GetArgument(args, "--method", "-m");
         string? fileName = GetArgument(args, "--file", "-f");
-        int depth = int.TryParse(GetArgument(args, "--depth", "-d"), out var d) ? d : 10;
+        int depth = int.TryParse(GetArgument(args, "--depth", "-d"), out var d) ? d : 5;
         bool run = args.Contains("--run") || args.Contains("-r");
         bool json = args.Contains("--json");
 
         if (string.IsNullOrWhiteSpace(solutionPath) || string.IsNullOrWhiteSpace(methodName))
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("Ошибка: Параметры --solution (-s) и --method (-m) обязательны!");
+            Console.WriteLine("Error: The --solution (-s) and --method (-m) options are required.");
             Console.ResetColor();
             PrintUsage();
             return 1;
@@ -44,7 +44,7 @@ internal static class Program
         if (!solutionFile.Exists)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Ошибка: Файл решения не найден: {solutionFile.FullName}");
+            Console.WriteLine($"Error: Solution file not found: {solutionFile.FullName}");
             Console.ResetColor();
             return 1;
         }
@@ -103,13 +103,9 @@ TestLens CLI - Инструмент поиска тестов по методу 
         {
             var instances = MSBuildLocator.QueryVisualStudioInstances().ToArray();
             if (instances.Length > 0)
-            {
                 MSBuildLocator.RegisterInstance(instances.OrderByDescending(i => i.Version).First());
-            }
             else
-            {
                 MSBuildLocator.RegisterDefaults();
-            }
         }
 
         // Настройка DI через общий фабричный метод Core
@@ -140,9 +136,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
         var solution = await workspace.OpenSolutionAsync(solutionFile.FullName);
 
         if (!outputJson)
-        {
             Console.WriteLine($"Поиск метода '{methodName}' в решении...");
-        }
 
         var candidateMethods = new List<(IMethodSymbol Symbol, Document Document)>();
 
@@ -151,20 +145,18 @@ TestLens CLI - Инструмент поиска тестов по методу 
             foreach (var document in project.Documents)
             {
                 if (fileName != null && !document.Name.Contains(fileName, StringComparison.OrdinalIgnoreCase))
-                {
                     continue;
-                }
 
                 if (!document.Name.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-                {
                     continue;
-                }
 
                 var syntaxRoot = await document.GetSyntaxRootAsync();
-                if (syntaxRoot == null) continue;
+                if (syntaxRoot == null)
+                    continue;
 
                 var semanticModel = await document.GetSemanticModelAsync();
-                if (semanticModel == null) continue;
+                if (semanticModel == null)
+                    continue;
 
                 var methodDeclarations = syntaxRoot.DescendantNodes()
                     .OfType<MethodDeclarationSyntax>()
@@ -174,9 +166,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
                 {
                     var symbol = semanticModel.GetDeclaredSymbol(methodDecl);
                     if (symbol is IMethodSymbol methodSymbol)
-                    {
                         candidateMethods.Add((methodSymbol, document));
-                    }
                 }
             }
         }
@@ -184,13 +174,11 @@ TestLens CLI - Инструмент поиска тестов по методу 
         if (candidateMethods.Count == 0)
         {
             if (outputJson)
-            {
-                Console.WriteLine(JsonSerializer.Serialize(new { error = $"Метод '{methodName}' не найден в решении." }));
-            }
+                Console.WriteLine(JsonSerializer.Serialize(new { error = $"Method '{methodName}' not found in solution." }));
             else
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"Метод с именем '{methodName}' не найден в коде.");
+                Console.WriteLine($"Method named '{methodName}' not found in code.");
                 Console.ResetColor();
             }
             return;
@@ -212,7 +200,8 @@ TestLens CLI - Инструмент поиска тестов по методу 
             FollowOverrides = true
         };
 
-        var result = await testFinder.FindCoveringTestsAsync(solution, targetMethod, options);
+        var progress = outputJson ? null : new Progress<string>(msg => Console.WriteLine($"[TestLens] {msg}"));
+        var result = await testFinder.FindCoveringTestsAsync(solution, targetMethod, options, progress);
 
         if (outputJson)
         {
@@ -319,9 +308,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine($"✗ ОШИБКА: Тесты завершились неудачей! (Провалено: {runResult.FailedCount}, Пройдено: {runResult.PassedCount})");
                     if (!string.IsNullOrEmpty(runResult.ErrorMessage))
-                    {
                         Console.WriteLine($"  {runResult.ErrorMessage}");
-                    }
                 }
                 Console.ResetColor();
             }
