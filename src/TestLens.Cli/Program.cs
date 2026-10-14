@@ -14,6 +14,8 @@ namespace TestLens.Cli;
 
 internal static class Program
 {
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
     private static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -56,22 +58,23 @@ internal static class Program
     private static void PrintUsage()
     {
         Console.WriteLine("""
-TestLens CLI - Инструмент поиска тестов по методу в .NET
+TestLens CLI - Covering test discovery by call chain in .NET
 
-Использование:
-  dotnet run --project src/TestLens.Cli -- [параметры]
+Usage:
+  dotnet run --project src/TestLens.Cli -- [options]
 
-Параметры:
-  -s, --solution <path>   Путь к файлу решения (.sln) [обязательно]
-  -m, --method <name>     Имя целевого метода [обязательно]
-  -f, --file <name>       Имя файла исходного кода (для фильтрации перегрузок)
-  -d, --depth <int>       Максимальная глубина цепочки вызовов (по умолчанию: 10)
-  -r, --run               Автоматически запустить найденные тесты
-  --json                  Вывод в формате JSON (для интеграции с IDE/VS Code)
-  -h, --help              Справка
+Options:
+  -s, --solution <path>   Path to the solution file (.sln) [required]
+  -m, --method <name>     Name of the target method [required]
+  -f, --file <name>       Source file name filter (for method overloads)
+  -d, --depth <int>       Maximum call chain depth (default: 5)
+  -r, --run               Automatically run discovered covering tests
+  --json                  Output in JSON format
+  -h, --help              Show help information
 
-Пример:
-  TestLens.Cli -s MySolution.sln -m ProcessOrder -r
+Examples:
+  dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m CreateWorkspaceFromSource -r
+  dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m FindCoveringTestsAsync
 """);
     }
 
@@ -82,9 +85,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
             foreach (var alias in aliases)
             {
                 if (string.Equals(args[i], alias, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
-                {
                     return args[i + 1];
-                }
             }
         }
         return null;
@@ -98,7 +99,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
         bool runTests,
         bool outputJson)
     {
-        // Регистрация экземпляра MSBuild
+        // Register MSBuild instance
         if (!MSBuildLocator.IsRegistered)
         {
             var instances = MSBuildLocator.QueryVisualStudioInstances().ToArray();
@@ -108,7 +109,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
                 MSBuildLocator.RegisterDefaults();
         }
 
-        // Настройка DI через общий фабричный метод Core
+        // Configure DI via Core factory
         var serviceProvider = TestLens.Core.TestLensServices.CreateServiceProvider();
 
         var testFinder = serviceProvider.GetRequiredService<ICoveringTestFinder>();
@@ -117,9 +118,9 @@ TestLens CLI - Инструмент поиска тестов по методу 
         if (!outputJson)
         {
             Console.WriteLine("╔════════════════════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║   TestLens CLI - Поиск тестов по цепочке вызовов Roslyn   ║");
+            Console.WriteLine("║        TestLens CLI - Roslyn Inverted Call Graph Test Finder           ║");
             Console.WriteLine("╚════════════════════════════════════════════════════════════════════════╝");
-            Console.WriteLine($"Загрузка решения: {solutionFile.Name}...");
+            Console.WriteLine($"Loading solution: {solutionFile.Name}...");
         }
 
         using var workspace = MSBuildWorkspace.Create();
@@ -136,7 +137,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
         var solution = await workspace.OpenSolutionAsync(solutionFile.FullName);
 
         if (!outputJson)
-            Console.WriteLine($"Поиск метода '{methodName}' в решении...");
+            Console.WriteLine($"Searching for method '{methodName}' in solution...");
 
         var candidateMethods = new List<(IMethodSymbol Symbol, Document Document)>();
 
@@ -187,7 +188,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
         var targetEntry = candidateMethods[0];
         if (candidateMethods.Count > 1 && !outputJson)
         {
-            Console.WriteLine($"Найдено методов: {candidateMethods.Count}. Используется первый найденный:");
+            Console.WriteLine($"Methods found: {candidateMethods.Count}. Using first match:");
             Console.WriteLine($"  -> {targetEntry.Symbol.ToDisplayString()} ({targetEntry.Document.FilePath})");
         }
 
@@ -205,41 +206,40 @@ TestLens CLI - Инструмент поиска тестов по методу 
 
         if (outputJson)
         {
-            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
-            Console.WriteLine(JsonSerializer.Serialize(result, jsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
             return;
         }
 
         Console.WriteLine();
         Console.WriteLine("------------------------------------------------------------------------");
-        Console.Write("Целевой метод: ");
+        Console.Write("Target method: ");
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine(result.TargetMethodFullyQualifiedName);
         Console.ResetColor();
 
-        Console.Write("Файл: ");
+        Console.Write("File: ");
         Console.WriteLine($"{result.TargetFilePath}:{result.TargetLineNumber}");
 
-        Console.Write("Статус покрытия: ");
+        Console.Write("Coverage status: ");
         if (result.IsCovered)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"ПОКРЫТ (найдено тестов: {result.TotalCoveringTestsCount})");
+            Console.WriteLine($"COVERED (found {result.TotalCoveringTestsCount} test(s))");
         }
         else
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("НЕ ПОКРЫТ ТЕСТАМИ (0 вызовов из тестов)");
+            Console.WriteLine("NOT COVERED BY TESTS (0 calls from tests found)");
         }
         Console.ResetColor();
 
-        Console.WriteLine($"Время анализа: {result.ElapsedTime.TotalMilliseconds:F1} мс");
+        Console.WriteLine($"Analysis time: {result.ElapsedTime.TotalMilliseconds:F1} ms");
         Console.WriteLine("------------------------------------------------------------------------");
 
         if (result.IsCovered)
         {
             Console.WriteLine();
-            Console.WriteLine("Список тестов и цепочек вызовов:");
+            Console.WriteLine("Covering tests and call chains:");
 
             for (int i = 0; i < result.CoveringTests.Count; i++)
             {
@@ -253,17 +253,15 @@ TestLens CLI - Инструмент поиска тестов по методу 
                 Console.Write($"{test.FullyQualifiedName} ");
 
                 Console.ForegroundColor = match.HasDirectCall ? ConsoleColor.Green : ConsoleColor.DarkYellow;
-                Console.WriteLine($"({(match.HasDirectCall ? "Прямой вызов" : $"Косвенный, глубина: {match.MinDepth}")})");
+                Console.WriteLine($"({(match.HasDirectCall ? "Direct call" : $"Indirect call, depth: {match.MinDepth}")})");
                 Console.ResetColor();
 
                 if (!string.IsNullOrEmpty(test.DisplayName))
-                {
                     Console.WriteLine($"    Display: \"{test.DisplayName}\"");
-                }
 
                 foreach (var chain in match.CallChains)
                 {
-                    Console.WriteLine("    Цепочка вызова:");
+                    Console.WriteLine("    Call chain:");
                     for (int s = 0; s < chain.Steps.Count; s++)
                     {
                         var step = chain.Steps[s];
@@ -283,7 +281,7 @@ TestLens CLI - Инструмент поиска тестов по методу 
             {
                 Console.WriteLine();
                 Console.WriteLine("════════════════════════════════════════════════════════════════════════");
-                Console.WriteLine("Запуск найденных тестов через `dotnet test`...");
+                Console.WriteLine("Running discovered tests via 'dotnet test'...");
                 Console.WriteLine("════════════════════════════════════════════════════════════════════════");
 
                 var runRequest = new TestRunRequest
@@ -301,12 +299,12 @@ TestLens CLI - Инструмент поиска тестов по методу 
                 if (runResult.Success)
                 {
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"✓ ВСЕ ТЕСТЫ ПРОЙДЕНЫ! (Пройдено: {runResult.PassedCount}, Время: {runResult.Duration.TotalSeconds:F2}с)");
+                    Console.WriteLine($"✓ ALL TESTS PASSED! (Passed: {runResult.PassedCount}, Duration: {runResult.Duration.TotalSeconds:F2}s)");
                 }
                 else
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"✗ ОШИБКА: Тесты завершились неудачей! (Провалено: {runResult.FailedCount}, Пройдено: {runResult.PassedCount})");
+                    Console.WriteLine($"✗ FAILED: Tests failed! (Failed: {runResult.FailedCount}, Passed: {runResult.PassedCount})");
                     if (!string.IsNullOrEmpty(runResult.ErrorMessage))
                         Console.WriteLine($"  {runResult.ErrorMessage}");
                 }

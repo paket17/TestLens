@@ -139,18 +139,15 @@ public sealed class RoslynInvertedCallGraphWalker(
                     StepKind = caller.StepKind
                 };
 
-                var updatedSteps = new List<CallChainStep> { step };
+                var updatedSteps = new List<CallChainStep>(currentNode.StepsFromCurrentToTarget.Count + 1) { step };
                 updatedSteps.AddRange(currentNode.StepsFromCurrentToTarget);
 
                 // Check if caller is a test method
                 if (_testDetector.TryGetTestDescriptor(caller.CallerSymbol, out var testDescriptor))
                 {
-                    if (options.TestProjectFilter != null &&
-                        options.TestProjectFilter.Count > 0 &&
+                    if (options.TestProjectFilter is { Count: > 0 } &&
                         !options.TestProjectFilter.Contains(testDescriptor.ProjectName, StringComparer.OrdinalIgnoreCase))
-                    {
                         continue;
-                    }
 
                     var callChain = new CallChain
                     {

@@ -37,6 +37,7 @@ public partial class TestLensToolWindowControl : UserControl
     {
         if (ViewModel.IsLoading)
             return;
+
         _ = RunAllTestsAsync();
     }
 
@@ -99,9 +100,7 @@ public partial class TestLensToolWindowControl : UserControl
             if (cancellationToken.IsCancellationRequested)
             {
                 ViewModel.StatusText = "Test execution stopped.";
-                foreach (var t in ViewModel.Tests)
-                    if (t.Status == TestExecutionStatus.Running)
-                        t.Status = TestExecutionStatus.NotRun;
+                ResetRunningTests();
                 return;
             }
 
@@ -111,37 +110,12 @@ public partial class TestLensToolWindowControl : UserControl
                 await pane.WriteLineAsync($"=== Result: {(result.Success ? "PASSED" : "FAILED")} | Passed: {result.PassedCount}, Failed: {result.FailedCount}, Skipped: {result.SkippedCount}, Duration: {result.Duration.TotalSeconds:F2}s ===");
             }
 
-            if (result.FailedCount == 0 && result.PassedCount > 0)
-            {
-                ViewModel.StatusText = $"Tests passed: {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
-                foreach (var t in ViewModel.Tests)
-                    t.Status = TestExecutionStatus.Passed;
-            }
-            else if (result.FailedCount > 0)
-            {
-                ViewModel.StatusText = $"Tests failed: {result.FailedCount} failed, {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
-                foreach (var t in ViewModel.Tests)
-                    t.Status = TestExecutionStatus.Failed;
-            }
-            else if (!result.Success)
-            {
-                ViewModel.StatusText = "Test execution failed. See TestLens Output window for details.";
-                foreach (var t in ViewModel.Tests)
-                    t.Status = TestExecutionStatus.Failed;
-            }
-            else
-            {
-                ViewModel.StatusText = $"Completed: {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
-                foreach (var t in ViewModel.Tests)
-                    t.Status = TestExecutionStatus.Passed;
-            }
+            UpdateAllTestsStatus(result);
         }
         catch (OperationCanceledException)
         {
             ViewModel.StatusText = "Test execution stopped.";
-            foreach (var t in ViewModel.Tests)
-                if (t.Status == TestExecutionStatus.Running)
-                    t.Status = TestExecutionStatus.NotRun;
+            ResetRunningTests();
         }
         catch (Exception ex)
         {
@@ -154,10 +128,38 @@ public partial class TestLensToolWindowControl : UserControl
         }
     }
 
+    private void UpdateAllTestsStatus(TestRunResult result)
+    {
+        var passed = result.FailedCount == 0 && (result.PassedCount > 0 || result.Success);
+        var targetStatus = passed ? TestExecutionStatus.Passed : TestExecutionStatus.Failed;
+
+        foreach (var t in ViewModel.Tests)
+            t.Status = targetStatus;
+
+        if (result.FailedCount == 0 && result.PassedCount > 0)
+            ViewModel.StatusText = $"Tests passed: {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
+        else if (result.FailedCount > 0)
+            ViewModel.StatusText = $"Tests failed: {result.FailedCount} failed, {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
+        else if (!result.Success)
+            ViewModel.StatusText = "Test execution failed. See TestLens Output window for details.";
+        else
+            ViewModel.StatusText = $"Completed: {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
+    }
+
+    private void ResetRunningTests()
+    {
+        foreach (var t in ViewModel.Tests)
+        {
+            if (t.Status == TestExecutionStatus.Running)
+                t.Status = TestExecutionStatus.NotRun;
+        }
+    }
+
     private void BtnRunSingleTest_Click(object sender, RoutedEventArgs e)
     {
         if (ViewModel.IsLoading)
             return;
+
         if (sender is FrameworkElement { DataContext: CoveringTestItemViewModel item })
             _ = RunSingleTestAsync(item);
     }
@@ -288,6 +290,7 @@ public partial class TestLensToolWindowControl : UserControl
                     scrollViewer.LineRight();
                 else
                     scrollViewer.LineLeft();
+
                 e.Handled = true;
             }
         }

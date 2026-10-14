@@ -176,7 +176,7 @@ public sealed class CallerResolver(
     /// Ограничивает область поиска только проектами, зависящими от сборки целевого символа.
     /// Это дает колоссальное ускорение в крупных решениях с сотнями проектов.
     /// </summary>
-    private static System.Collections.Immutable.IImmutableSet<Document>? GetCandidateDocuments(
+    private static System.Collections.Immutable.ImmutableHashSet<Document>? GetCandidateDocuments(
         Solution solution,
         IMethodSymbol symbol)
     {
@@ -192,21 +192,21 @@ public sealed class CallerResolver(
         var depGraph = solution.GetProjectDependencyGraph();
         var dependentProjectIds = depGraph.GetProjectsThatTransitivelyDependOnThisProject(declaringProject.Id);
 
-        var docSet = new HashSet<Document>();
+        var builder = System.Collections.Immutable.ImmutableHashSet.CreateBuilder<Document>();
         foreach (var doc in declaringProject.Documents)
-            docSet.Add(doc);
+            builder.Add(doc);
 
         foreach (var depId in dependentProjectIds)
         {
             var depProject = solution.GetProject(depId);
-            if (depProject != null)
-            {
-                foreach (var doc in depProject.Documents)
-                    docSet.Add(doc);
-            }
+            if (depProject == null)
+                continue;
+
+            foreach (var doc in depProject.Documents)
+                builder.Add(doc);
         }
 
-        return System.Collections.Immutable.ImmutableHashSet.ToImmutableHashSet(docSet);
+        return builder.ToImmutable();
     }
 
     /// <summary>
@@ -260,16 +260,16 @@ public sealed class CallerResolver(
 
         // 2. Неявно реализованные методы интерфейсов
         var containingType = method.ContainingType;
-        if (containingType != null)
+        if (containingType == null)
+            yield break;
+
+        foreach (var iface in containingType.AllInterfaces)
         {
-            foreach (var iface in containingType.AllInterfaces)
+            foreach (var ifaceMember in iface.GetMembers().OfType<IMethodSymbol>())
             {
-                foreach (var ifaceMember in iface.GetMembers().OfType<IMethodSymbol>())
-                {
-                    var impl = containingType.FindImplementationForInterfaceMember(ifaceMember);
-                    if (SymbolEqualityComparer.Default.Equals(impl, method))
-                        yield return ifaceMember;
-                }
+                var impl = containingType.FindImplementationForInterfaceMember(ifaceMember);
+                if (SymbolEqualityComparer.Default.Equals(impl, method))
+                    yield return ifaceMember;
             }
         }
     }

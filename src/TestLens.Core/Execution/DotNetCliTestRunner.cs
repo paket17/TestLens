@@ -14,6 +14,10 @@ namespace TestLens.Core.Execution;
 public sealed class DotNetCliTestRunner(
     ILogger<DotNetCliTestRunner>? logger = null) : ITestRunner
 {
+    private static readonly Regex PassedRegex = new(@"Passed:\s*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex FailedRegex = new(@"Failed:\s*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex SkippedRegex = new(@"Skipped:\s*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public Task<TestRunResult> RunSingleTestAsync(
         string solutionOrProjectPath,
         TestMethodDescriptor test,
@@ -152,7 +156,7 @@ public sealed class DotNetCliTestRunner(
         catch (Exception ex)
         {
             stopwatch.Stop();
-            logger?.LogError(ex, "Startup error dotnet test");
+            logger?.LogError(ex, "Error running 'dotnet test'");
             return new TestRunResult
             {
                 Success = false,
@@ -181,15 +185,15 @@ public sealed class DotNetCliTestRunner(
         var failed = 0;
         var skipped = 0;
 
-        var passedMatch = Regex.Match(output, @"Passed:\s*(\d+)", RegexOptions.IgnoreCase);
+        var passedMatch = PassedRegex.Match(output);
         if (passedMatch.Success && int.TryParse(passedMatch.Groups[1].Value, out var p))
             passed = p;
 
-        var failedMatch = Regex.Match(output, @"Failed:\s*(\d+)", RegexOptions.IgnoreCase);
+        var failedMatch = FailedRegex.Match(output);
         if (failedMatch.Success && int.TryParse(failedMatch.Groups[1].Value, out var f))
             failed = f;
 
-        var skippedMatch = Regex.Match(output, @"Skipped:\s*(\d+)", RegexOptions.IgnoreCase);
+        var skippedMatch = SkippedRegex.Match(output);
         if (skippedMatch.Success && int.TryParse(skippedMatch.Groups[1].Value, out var s))
             skipped = s;
 

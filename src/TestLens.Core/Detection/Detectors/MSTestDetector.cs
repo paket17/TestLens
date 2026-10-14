@@ -61,9 +61,7 @@ public sealed class MSTestDetector : ITestFrameworkDetector
         {
             if (string.Equals(namedArg.Key, "DisplayName", StringComparison.OrdinalIgnoreCase) &&
                 namedArg.Value.Value is string strVal)
-            {
                 return strVal;
-            }
         }
 
         // 2. Синтаксический fallback

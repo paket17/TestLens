@@ -68,9 +68,7 @@ public sealed class NUnitTestDetector : ITestFrameworkDetector
             if ((string.Equals(namedArg.Key, "Description", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(namedArg.Key, "TestName", StringComparison.OrdinalIgnoreCase)) &&
                 namedArg.Value.Value is string strVal)
-            {
                 return strVal;
-            }
         }
 
         // 2. Синтаксический fallback
@@ -84,9 +82,7 @@ public sealed class NUnitTestDetector : ITestFrameworkDetector
                      string.Equals(arg.NameEquals.Name.Identifier.Text, "TestName", StringComparison.OrdinalIgnoreCase)))
                 {
                     if (arg.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax lit)
-                    {
                         return lit.Token.ValueText;
-                    }
                 }
             }
         }

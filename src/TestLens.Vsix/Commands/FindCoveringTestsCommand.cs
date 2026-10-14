@@ -61,66 +61,9 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
             return;
         }
 
-        var docView = await VS.Documents.GetActiveDocumentViewAsync();
-        var caretPosition = docView?.TextView?.Caret.Position.BufferPosition.Position ?? -1;
-        var filePath = docView?.FilePath;
-
-        Document? document = null;
-        if (!string.IsNullOrEmpty(filePath))
-        {
-            var documentId = workspace.CurrentSolution.GetDocumentIdsWithFilePath(filePath).FirstOrDefault();
-            if (documentId != null)
-                document = workspace.CurrentSolution.GetDocument(documentId);
-        }
-
-        // Fallback to last searched document if active document is not a C# code file in the solution
-        if (document == null && _lastDocumentId != null && workspace.CurrentSolution.ContainsDocument(_lastDocumentId))
-        {
-            document = workspace.CurrentSolution.GetDocument(_lastDocumentId);
-            if (caretPosition < 0)
-                caretPosition = _lastMethodPosition;
-        }
-
-        if (document == null)
-        {
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Please open a C# file containing a method or select a method first.");
+        var target = await ResolveTargetMethodAsync(workspace);
+        if (target == null)
             return;
-        }
-
-        var syntaxRoot = await document.GetSyntaxRootAsync();
-        var semanticModel = await document.GetSemanticModelAsync();
-        if (syntaxRoot == null || semanticModel == null)
-            return;
-
-        MethodDeclarationSyntax? methodDecl = null;
-        if (caretPosition >= 0 && caretPosition < syntaxRoot.FullSpan.Length)
-        {
-            var token = syntaxRoot.FindToken(caretPosition);
-            methodDecl = token.Parent?.FirstAncestorOrSelf<MethodDeclarationSyntax>();
-        }
-
-        // Fallback to last method position in document if caret wasn't inside a method
-        if (methodDecl == null && _lastMethodPosition >= 0 && _lastMethodPosition < syntaxRoot.FullSpan.Length)
-        {
-            var token = syntaxRoot.FindToken(_lastMethodPosition);
-            methodDecl = token.Parent?.FirstAncestorOrSelf<MethodDeclarationSyntax>();
-        }
-
-        if (methodDecl == null)
-        {
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Place the caret inside a method declaration or body to find covering tests.");
-            return;
-        }
-
-        var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl) as IMethodSymbol;
-        if (methodSymbol == null)
-        {
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Failed to resolve method symbol.");
-            return;
-        }
-
-        _lastDocumentId = document.Id;
-        _lastMethodPosition = methodDecl.SpanStart;
 
         // Open Tool Window
         var toolWindow = await TestLensToolWindow.ShowAsync();
@@ -129,23 +72,23 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
 
         control.ViewModel.Tests.Clear();
         control.ViewModel.TestsCount = 0;
-        control.ViewModel.TargetMethodName = methodSymbol.Name;
-        control.ViewModel.TargetMethodFqn = methodSymbol.ToDisplayString();
-        control.ViewModel.TargetLocation = $"{document.FilePath}:{methodDecl.GetLocation().GetLineSpan().StartLinePosition.Line + 1}";
+        control.ViewModel.TargetMethodName = target.MethodSymbol.Name;
+        control.ViewModel.TargetMethodFqn = target.MethodSymbol.ToDisplayString();
+        control.ViewModel.TargetLocation = $"{target.Document.FilePath}:{target.MethodDecl.GetLocation().GetLineSpan().StartLinePosition.Line + 1}";
         control.ViewModel.CoverageState = CoverageState.Undetermined;
         control.ViewModel.IsLoading = true;
         control.ViewModel.StatusText = "Searching covering tests across dependency graph...";
 
-        _activeSearchCts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(45));
+        _activeSearchCts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(45));
         var searchToken = _activeSearchCts.Token;
 
-        var progress = new System.Progress<string>(msg =>
+        var progress = new Progress<string>(msg =>
         {
             if (searchId == _activeSearchId && control.ViewModel.IsLoading)
                 control.ViewModel.StatusText = msg;
         });
 
-        var testProgress = new System.Progress<CoveringTestMatch>(match =>
+        var testProgress = new Progress<CoveringTestMatch>(match =>
         {
             if (searchId == _activeSearchId && control.ViewModel.IsLoading)
                 control.ViewModel.AddOrUpdateDiscoveredMatch(match);
@@ -175,7 +118,7 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
                     FollowOverrides = true
                 };
 
-                var result = await finder.FindCoveringTestsAsync(workspace.CurrentSolution, methodSymbol, options, progress, testProgress, searchToken);
+                var result = await finder.FindCoveringTestsAsync(workspace.CurrentSolution, target.MethodSymbol, options, progress, testProgress, searchToken);
 
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
                 if (searchId != _activeSearchId)
@@ -185,16 +128,7 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
                 control.ViewModel.UpdateFromResult(result);
 
                 if (searchToken.IsCancellationRequested)
-                {
-                    if (result.CoveringTests.Count == 0)
-                        control.ViewModel.CoverageState = CoverageState.Undetermined;
-                    else
-                        control.ViewModel.CoverageState = CoverageState.Covered;
-
-                    control.ViewModel.StatusText = result.CoveringTests.Count == 0
-                        ? $"Search stopped: no tests found yet ({result.ElapsedTime.TotalSeconds:F1}s)"
-                        : $"Search stopped: found {result.CoveringTests.Count} test(s) ({result.ElapsedTime.TotalSeconds:F1}s)";
-                }
+                    ApplySearchStoppedStatus(control.ViewModel, result.CoveringTests.Count, result.ElapsedTime.TotalSeconds);
             }
             catch (OperationCanceledException)
             {
@@ -203,14 +137,7 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
                     return;
 
                 control.ViewModel.IsLoading = false;
-                if (control.ViewModel.Tests.Count == 0)
-                    control.ViewModel.CoverageState = CoverageState.Undetermined;
-                else
-                    control.ViewModel.CoverageState = CoverageState.Covered;
-
-                control.ViewModel.StatusText = control.ViewModel.Tests.Count == 0
-                    ? "Search was stopped: no tests found yet."
-                    : $"Search stopped: found {control.ViewModel.Tests.Count} test(s).";
+                ApplySearchStoppedStatus(control.ViewModel, control.ViewModel.Tests.Count);
             }
             catch (Exception ex)
             {
@@ -222,5 +149,96 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
                 control.ViewModel.StatusText = $"Error during search: {ex.Message}";
             }
         }, searchToken);
+    }
+
+    private static async Task<TargetMethodContext?> ResolveTargetMethodAsync(VisualStudioWorkspace workspace)
+    {
+        var docView = await VS.Documents.GetActiveDocumentViewAsync();
+        var caretPosition = docView?.TextView?.Caret.Position.BufferPosition.Position ?? -1;
+        var filePath = docView?.FilePath;
+
+        Document? document = null;
+        if (!string.IsNullOrEmpty(filePath))
+        {
+            var documentId = workspace.CurrentSolution.GetDocumentIdsWithFilePath(filePath).FirstOrDefault();
+            if (documentId != null)
+                document = workspace.CurrentSolution.GetDocument(documentId);
+        }
+
+        // Fallback to last searched document if active document is not a C# code file in the solution
+        if (document == null && _lastDocumentId != null && workspace.CurrentSolution.ContainsDocument(_lastDocumentId))
+        {
+            document = workspace.CurrentSolution.GetDocument(_lastDocumentId);
+            if (caretPosition < 0)
+                caretPosition = _lastMethodPosition;
+        }
+
+        if (document == null)
+        {
+            await VS.MessageBox.ShowWarningAsync("TestLens", "Please open a C# file containing a method or select a method first.");
+            return null;
+        }
+
+        var syntaxRoot = await document.GetSyntaxRootAsync();
+        var semanticModel = await document.GetSemanticModelAsync();
+        if (syntaxRoot == null || semanticModel == null)
+            return null;
+
+        MethodDeclarationSyntax? methodDecl = null;
+        if (caretPosition >= 0 && caretPosition < syntaxRoot.FullSpan.Length)
+        {
+            var token = syntaxRoot.FindToken(caretPosition);
+            methodDecl = token.Parent?.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+        }
+
+        // Fallback to last method position in document if caret wasn't inside a method
+        if (methodDecl == null && _lastMethodPosition >= 0 && _lastMethodPosition < syntaxRoot.FullSpan.Length)
+        {
+            var token = syntaxRoot.FindToken(_lastMethodPosition);
+            methodDecl = token.Parent?.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+        }
+
+        if (methodDecl == null)
+        {
+            await VS.MessageBox.ShowWarningAsync("TestLens", "Place the caret inside a method declaration or body to find covering tests.");
+            return null;
+        }
+
+        if (semanticModel.GetDeclaredSymbol(methodDecl) is not IMethodSymbol methodSymbol)
+        {
+            await VS.MessageBox.ShowWarningAsync("TestLens", "Failed to resolve method symbol.");
+            return null;
+        }
+
+        _lastDocumentId = document.Id;
+        _lastMethodPosition = methodDecl.SpanStart;
+
+        return new TargetMethodContext(document, methodDecl, methodSymbol);
+    }
+
+    private static void ApplySearchStoppedStatus(TestLensViewModel viewModel, int count, double? elapsedSeconds = null)
+    {
+        viewModel.CoverageState = count > 0 ? CoverageState.Covered : CoverageState.Undetermined;
+        viewModel.StatusText = count == 0
+            ? elapsedSeconds.HasValue
+                ? $"Search stopped: no tests found yet ({elapsedSeconds.Value:F1}s)"
+                : "Search was stopped: no tests found yet."
+            : elapsedSeconds.HasValue
+                ? $"Search stopped: found {count} test(s) ({elapsedSeconds.Value:F1}s)"
+                : $"Search stopped: found {count} test(s).";
+    }
+
+    private sealed class TargetMethodContext
+    {
+        public Document Document { get; }
+        public MethodDeclarationSyntax MethodDecl { get; }
+        public IMethodSymbol MethodSymbol { get; }
+
+        public TargetMethodContext(Document document, MethodDeclarationSyntax methodDecl, IMethodSymbol methodSymbol)
+        {
+            Document = document;
+            MethodDecl = methodDecl;
+            MethodSymbol = methodSymbol;
+        }
     }
 }

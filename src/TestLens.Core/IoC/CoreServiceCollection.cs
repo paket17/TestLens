@@ -43,14 +43,13 @@ public sealed class CoreServiceProvider : IServiceProvider
         if (serviceType.IsGenericType && serviceType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
         {
             var itemType = serviceType.GetGenericArguments()[0];
-            var matches = _descriptors.Where(d => d.ServiceType == itemType).ToList();
             var listType = typeof(List<>).MakeGenericType(itemType);
             var list = (IList)Activator.CreateInstance(listType)!;
 
-            foreach (var match in matches)
+            foreach (var d in _descriptors)
             {
-                var instance = ResolveInstance(match);
-                list.Add(instance);
+                if (d.ServiceType == itemType)
+                    list.Add(ResolveInstance(d));
             }
 
             return list;
