@@ -1,0 +1,14 @@
+## Visual Studio / .NET .gitignore
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+*.vsix
+!src/TestLens.Vsix/bin/Debug/net48/TestLens.vsix
+!src/TestLens.Vsix/TestLens.vsix
