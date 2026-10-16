@@ -3,7 +3,7 @@ namespace TestLens.Core.Execution.Models;
 /// <summary>
 /// Статус выполнения теста.
 /// </summary>
-public enum TestOutcome
+public enum TestStatus
 {
     NotRun = 0,
     Passed = 1,

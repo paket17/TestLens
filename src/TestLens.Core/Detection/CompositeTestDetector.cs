@@ -7,11 +7,15 @@ namespace TestLens.Core.Detection;
 /// <summary>
 /// Композитный детектор тестов, объединяющий детекторы различных фреймворков.
 /// </summary>
-public sealed class CompositeTestDetector(
-    IEnumerable<ITestFrameworkDetector> detectors) : ITestDetector
+public sealed class CompositeTestDetector(IEnumerable<ITestFrameworkDetector> detectors) : ITestDetector
 {
     private readonly IReadOnlyList<ITestFrameworkDetector> _detectors = 
         detectors?.ToList() ?? throw new ArgumentNullException(nameof(detectors));
+
+    public CompositeTestDetector(params ITestFrameworkDetector[] detectors)
+        : this((IEnumerable<ITestFrameworkDetector>)detectors)
+    {
+    }
 
     public bool TryGetTestDescriptor(
         IMethodSymbol methodSymbol,

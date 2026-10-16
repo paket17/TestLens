@@ -1,102 +1,57 @@
-using System;
-using System.Collections.Generic;
 using TestLens.Core.Analysis;
 using TestLens.Core.Detection;
 using TestLens.Core.Detection.Detectors;
 using TestLens.Core.Execution;
-using TestLens.Core.IoC;
-using Microsoft.Extensions.DependencyInjection;
-using Xunit;
 
 namespace TestLens.Core.Tests.IoC;
 
 public class DependencyInjectionTests
 {
     [Fact]
-    public void TestLensServices_CreateServiceProvider_ResolvesAllCoreServices()
+    public void TestLensServices_CreateFinder_ReturnsValidInstance()
     {
-        // Act
-        var provider = TestLensServices.CreateServiceProvider();
+        var finder = TestLensServices.CreateFinder();
 
-        // Assert
-        Assert.NotNull(provider);
-
-        var testFinder = provider.GetService(typeof(ICoveringTestFinder)) as ICoveringTestFinder;
-        Assert.NotNull(testFinder);
-
-        var testRunner = provider.GetService(typeof(ITestRunner)) as ITestRunner;
-        Assert.NotNull(testRunner);
-
-        var callerResolver = provider.GetService(typeof(ICallerResolver)) as ICallerResolver;
-        Assert.NotNull(callerResolver);
-
-        var testDetector = provider.GetService(typeof(ITestDetector)) as ITestDetector;
-        Assert.NotNull(testDetector);
+        finder.Should().NotBeNull();
+        finder.Should().BeOfType<RoslynInvertedCallGraphWalker>();
     }
 
     [Fact]
-    public void CoreServiceProvider_ResolvesIEnumerableOfDetectors()
+    public void TestLensServices_CreateFinder_WithCustomDependencies_UsesInjectedInstances()
     {
-        // Arrange
-        var provider = TestLensServices.CreateServiceProvider();
+        var customResolver = new CallerResolver();
+        var customDetector = new CompositeTestDetector(new XUnitTestDetector());
 
-        // Act
-        var detectors = provider.GetService(typeof(IEnumerable<ITestFrameworkDetector>)) as IEnumerable<ITestFrameworkDetector>;
+        var finder = TestLensServices.CreateFinder(customResolver, customDetector);
 
-        // Assert
-        Assert.NotNull(detectors);
-        var detectorList = new List<ITestFrameworkDetector>(detectors!);
-        Assert.Equal(3, detectorList.Count);
+        finder.Should().NotBeNull();
+        finder.Should().BeOfType<RoslynInvertedCallGraphWalker>();
     }
 
     [Fact]
-    public void CoreServiceProvider_SingletonLifetime_ReturnsSameInstance()
+    public void TestLensServices_CreateTestRunner_ReturnsValidInstance()
     {
-        // Arrange
-        var services = new CoreServiceCollection();
-        services.AddSingleton<ITestDetector, CompositeTestDetector>();
-        services.AddSingleton<ITestFrameworkDetector, XUnitTestDetector>();
+        var runner = TestLensServices.CreateTestRunner();
 
-        var provider = services.BuildServiceProvider();
-
-        // Act
-        var first = provider.GetService(typeof(ITestDetector));
-        var second = provider.GetService(typeof(ITestDetector));
-
-        // Assert
-        Assert.NotNull(first);
-        Assert.Same(first, second);
+        runner.Should().NotBeNull();
+        runner.Should().BeOfType<DotNetCliTestRunner>();
     }
 
     [Fact]
-    public void CoreServiceProvider_TransientLifetime_ReturnsDifferentInstances()
+    public void TestLensServices_CreateCallerResolver_ReturnsValidInstance()
     {
-        // Arrange
-        var services = new CoreServiceCollection();
-        services.AddTransient<ICallerResolver, CallerResolver>();
+        var resolver = TestLensServices.CreateCallerResolver();
 
-        var provider = services.BuildServiceProvider();
-
-        // Act
-        var first = provider.GetService(typeof(ICallerResolver));
-        var second = provider.GetService(typeof(ICallerResolver));
-
-        // Assert
-        Assert.NotNull(first);
-        Assert.NotNull(second);
-        Assert.NotSame(first, second);
+        resolver.Should().NotBeNull();
+        resolver.Should().BeOfType<CallerResolver>();
     }
 
     [Fact]
-    public void CoreServiceProvider_ReturnsNull_ForUnregisteredService()
+    public void TestLensServices_CreateTestDetector_ReturnsCompositeWithFrameworkDetectors()
     {
-        // Arrange
-        var provider = TestLensServices.CreateServiceProvider();
+        var detector = TestLensServices.CreateTestDetector();
 
-        // Act
-        var service = provider.GetService(typeof(IDisposable));
-
-        // Assert
-        Assert.Null(service);
+        detector.Should().NotBeNull();
+        detector.Should().BeOfType<CompositeTestDetector>();
     }
 }

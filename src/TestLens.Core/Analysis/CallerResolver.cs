@@ -1,8 +1,10 @@
-using TestLens.Core.Compatibility;
-using TestLens.Core.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Collections.Immutable;
+using TestLens.Core.Compatibility;
+using TestLens.Core.Models;
 
 namespace TestLens.Core.Analysis;
 
@@ -12,7 +14,7 @@ namespace TestLens.Core.Analysis;
 public sealed class CallerResolver(
     ILogger<CallerResolver>? logger = null) : ICallerResolver
 {
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<ISymbol, IReadOnlyList<DiscoveredCaller>> _cache =
+    private readonly ConcurrentDictionary<ISymbol, IReadOnlyList<DiscoveredCaller>> _cache =
         new(SymbolEqualityComparer.Default);
 
     public async Task<IReadOnlyList<DiscoveredCaller>> FindCallersAsync(
@@ -45,18 +47,17 @@ public sealed class CallerResolver(
         // 2. Interface calls if method implements interfaces (excluding standard System interfaces)
         if (options.FollowInterfaces && results.Count < options.MaxCallersPerMethod)
         {
-            foreach (var ifaceMethod in GetImplementedInterfaceMethods(targetMethod))
+            foreach (var interfaceMethod in GetImplementedInterfaceMethods(targetMethod))
             {
                 if (results.Count >= options.MaxCallersPerMethod)
                     break;
 
-                var ns = ifaceMethod.ContainingNamespace?.ToDisplayString();
-                if (ns != null && (ns.StartsWith("System.") || ns == "System"))
+                if (IsSymbolInSystemNameSpace(interfaceMethod))
                     continue;
 
                 await CollectCallersForSymbolAsync(
                     solution,
-                    ifaceMethod,
+                    interfaceMethod,
                     targetMethod,
                     CallChainStepKind.InterfaceDispatch,
                     results,
@@ -77,8 +78,7 @@ public sealed class CallerResolver(
                 if (containingType?.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType)
                     break;
 
-                var ns = containingType?.ContainingNamespace?.ToDisplayString();
-                if (ns != null && (ns.StartsWith("System.") || ns == "System"))
+                if (IsSymbolInSystemNameSpace(containingType))
                     break;
 
                 await CollectCallersForSymbolAsync(
@@ -98,6 +98,12 @@ public sealed class CallerResolver(
 
         _cache[targetMethod] = results;
         return results;
+    }
+
+    private bool IsSymbolInSystemNameSpace(ISymbol? symbol)
+    {
+        var nameSpace = symbol?.ContainingNamespace?.ToDisplayString();
+        return nameSpace != null && (nameSpace.StartsWith("System.") || nameSpace == "System");
     }
 
     private async Task CollectCallersForSymbolAsync(
@@ -176,7 +182,7 @@ public sealed class CallerResolver(
     /// Ограничивает область поиска только проектами, зависящими от сборки целевого символа.
     /// Это дает колоссальное ускорение в крупных решениях с сотнями проектов.
     /// </summary>
-    private static System.Collections.Immutable.ImmutableHashSet<Document>? GetCandidateDocuments(
+    private static ImmutableHashSet<Document>? GetCandidateDocuments(
         Solution solution,
         IMethodSymbol symbol)
     {
@@ -184,25 +190,31 @@ public sealed class CallerResolver(
         if (string.IsNullOrEmpty(assemblyName))
             return null;
 
-        var declaringProject = solution.Projects.FirstOrDefault(
-            p => string.Equals(p.AssemblyName, assemblyName, StringComparison.OrdinalIgnoreCase));
-        if (declaringProject == null)
+        var declaringProjects = solution.Projects
+            .Where(p => string.Equals(p.AssemblyName, assemblyName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (declaringProjects.Count == 0)
             return null;
 
-        var depGraph = solution.GetProjectDependencyGraph();
-        var dependentProjectIds = depGraph.GetProjectsThatTransitivelyDependOnThisProject(declaringProject.Id);
+        var dependencyGraph = solution.GetProjectDependencyGraph();
+        var relevantProjectIds = new HashSet<ProjectId>();
 
-        var builder = System.Collections.Immutable.ImmutableHashSet.CreateBuilder<Document>();
-        foreach (var doc in declaringProject.Documents)
-            builder.Add(doc);
-
-        foreach (var depId in dependentProjectIds)
+        foreach (var declaringProject in declaringProjects)
         {
-            var depProject = solution.GetProject(depId);
-            if (depProject == null)
+            relevantProjectIds.Add(declaringProject.Id);
+            foreach (var depId in dependencyGraph.GetProjectsThatTransitivelyDependOnThisProject(declaringProject.Id))
+                relevantProjectIds.Add(depId);
+        }
+
+        var builder = ImmutableHashSet.CreateBuilder<Document>();
+        foreach (var projId in relevantProjectIds)
+        {
+            var project = solution.GetProject(projId);
+            if (project == null)
                 continue;
 
-            foreach (var doc in depProject.Documents)
+            foreach (var doc in project.Documents)
                 builder.Add(doc);
         }
 

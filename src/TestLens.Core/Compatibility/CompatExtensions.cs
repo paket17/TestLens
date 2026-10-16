@@ -10,6 +10,9 @@ internal static class CompatExtensions
             throw new ArgumentNullException(paramName);
     }
 
+    // Process.WaitForExitAsync(CancellationToken) is built into .NET 5+ (.NET 8/10),
+    // but absent from .NET Standard 2.0 (.NET Framework 4.8 / VSIX host).
+    // This extension provides non-blocking async process waiting with cancellation support.
 #if NETSTANDARD2_0
     public static Task WaitForExitAsync(this Process process, CancellationToken cancellationToken = default)
     {

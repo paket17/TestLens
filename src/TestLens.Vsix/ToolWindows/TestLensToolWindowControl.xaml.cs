@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,11 +9,11 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Community.VisualStudio.Toolkit;
 using EnvDTE;
+using TestLens.Core;
 using TestLens.Core.Execution;
 using TestLens.Core.Execution.Models;
 using TestLens.Vsix.Commands;
 using TestLens.Vsix.ViewModels;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.ComponentModelHost;
 using Microsoft.VisualStudio.LanguageServices;
 using Microsoft.VisualStudio.Shell;
@@ -21,6 +22,8 @@ namespace TestLens.Vsix.ToolWindows;
 
 public partial class TestLensToolWindowControl : UserControl
 {
+    private static readonly Regex TestResultRegex = new(@"^\s*(Passed|Failed|Skipped)\s+([^\s\[]+)", RegexOptions.Compiled);
+
     private readonly ITestRunner _testRunner;
     public TestLensViewModel ViewModel { get; } = new();
 
@@ -29,12 +32,19 @@ public partial class TestLensToolWindowControl : UserControl
     public TestLensToolWindowControl()
     {
         InitializeComponent();
-        _testRunner = TestLensPackage.Services?.GetService<ITestRunner>() ?? new DotNetCliTestRunner();
+        _testRunner = TestLensServices.CreateTestRunner();
         DataContext = ViewModel;
     }
 
     private void BtnRunAll_Click(object sender, RoutedEventArgs e)
     {
+        if (ViewModel.IsRunningAllTests)
+        {
+            _testRunCts?.Cancel();
+            ViewModel.StatusText = "Stopping test execution...";
+            return;
+        }
+
         if (ViewModel.IsLoading)
             return;
 
@@ -70,7 +80,7 @@ public partial class TestLensToolWindowControl : UserControl
         foreach (var t in ViewModel.Tests)
             t.Status = TestExecutionStatus.Running;
 
-        ViewModel.IsLoading = true;
+        ViewModel.IsRunningAllTests = true;
         ViewModel.StatusText = $"Running {testsToRun.Count} covering test(s)...";
 
         try
@@ -85,16 +95,10 @@ public partial class TestLensToolWindowControl : UserControl
                 await pane.WriteLineAsync(string.Empty);
             }
 
-            if (dte != null && ViewModel.Tests.Count > 0)
-            {
-                var firstTest = ViewModel.Tests[0];
-                await OpenDocumentAtLineAsync(firstTest.Match.TestMethod.FilePath, firstTest.Match.TestMethod.LineNumber, dte);
-                await TriggerTestExplorerAsync(dte);
-            }
-
             var result = await _testRunner.RunTestsAsync(request, line =>
             {
                 pane?.WriteLine(line);
+                UpdateTestStatusFromLine(line);
             }, cancellationToken);
 
             if (cancellationToken.IsCancellationRequested)
@@ -124,17 +128,19 @@ public partial class TestLensToolWindowControl : UserControl
         }
         finally
         {
-            ViewModel.IsLoading = false;
+            ViewModel.IsRunningAllTests = false;
         }
     }
 
     private void UpdateAllTestsStatus(TestRunResult result)
     {
-        var passed = result.FailedCount == 0 && (result.PassedCount > 0 || result.Success);
-        var targetStatus = passed ? TestExecutionStatus.Passed : TestExecutionStatus.Failed;
+        var allPassed = result.FailedCount == 0 && (result.PassedCount > 0 || result.Success);
 
         foreach (var t in ViewModel.Tests)
-            t.Status = targetStatus;
+        {
+            if (t.Status == TestExecutionStatus.Running)
+                t.Status = allPassed ? TestExecutionStatus.Passed : TestExecutionStatus.Failed;
+        }
 
         if (result.FailedCount == 0 && result.PassedCount > 0)
             ViewModel.StatusText = $"Tests passed: {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
@@ -144,6 +150,34 @@ public partial class TestLensToolWindowControl : UserControl
             ViewModel.StatusText = "Test execution failed. See TestLens Output window for details.";
         else
             ViewModel.StatusText = $"Completed: {result.PassedCount} passed ({result.Duration.TotalSeconds:F2}s)";
+    }
+
+    private void UpdateTestStatusFromLine(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return;
+
+        var match = TestResultRegex.Match(line);
+        if (!match.Success)
+            return;
+
+        var outcome = match.Groups[1].Value;
+        var testName = match.Groups[2].Value;
+        var targetStatus = outcome switch
+        {
+            "Passed" => TestExecutionStatus.Passed,
+            "Failed" => TestExecutionStatus.Failed,
+            "Skipped" => TestExecutionStatus.Skipped,
+            _ => TestExecutionStatus.NotRun
+        };
+
+        var matchedItem = ViewModel.Tests.FirstOrDefault(t =>
+            string.Equals(t.FullyQualifiedName, testName, StringComparison.OrdinalIgnoreCase) ||
+            testName.EndsWith("." + t.DisplayName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(t.DisplayName, testName, StringComparison.OrdinalIgnoreCase));
+
+        if (matchedItem != null)
+            matchedItem.Status = targetStatus;
     }
 
     private void ResetRunningTests()
@@ -157,11 +191,20 @@ public partial class TestLensToolWindowControl : UserControl
 
     private void BtnRunSingleTest_Click(object sender, RoutedEventArgs e)
     {
+        if (sender is not FrameworkElement { DataContext: CoveringTestItemViewModel item })
+            return;
+
+        if (item.IsRunningSelf)
+        {
+            _testRunCts?.Cancel();
+            ViewModel.StatusText = $"Stopping test '{item.DisplayName}'...";
+            return;
+        }
+
         if (ViewModel.IsLoading)
             return;
 
-        if (sender is FrameworkElement { DataContext: CoveringTestItemViewModel item })
-            _ = RunSingleTestAsync(item);
+        _ = RunSingleTestAsync(item);
     }
 
     private async Task RunSingleTestAsync(CoveringTestItemViewModel item)
@@ -183,13 +226,10 @@ public partial class TestLensToolWindowControl : UserControl
         _testRunCts = new System.Threading.CancellationTokenSource();
         var cancellationToken = _testRunCts.Token;
 
+        item.IsRunningSelf = true;
         item.Status = TestExecutionStatus.Running;
-        ViewModel.IsLoading = true;
+        ViewModel.IsRunningSingleTest = true;
         ViewModel.StatusText = $"Running test '{item.DisplayName}'...";
-
-        await OpenDocumentAtLineAsync(item.Match.TestMethod.FilePath, item.Match.TestMethod.LineNumber, dte);
-        if (dte != null)
-            await TriggerTestExplorerAsync(dte);
 
         try
         {
@@ -239,7 +279,8 @@ public partial class TestLensToolWindowControl : UserControl
         }
         finally
         {
-            ViewModel.IsLoading = false;
+            item.IsRunningSelf = false;
+            ViewModel.IsRunningSingleTest = false;
         }
     }
 
@@ -251,12 +292,18 @@ public partial class TestLensToolWindowControl : UserControl
 
     private void BtnRefresh_Click(object sender, RoutedEventArgs e)
     {
-        if (ViewModel.IsLoading)
+        if (ViewModel.IsSearching)
         {
             FindCoveringTestsCommand.CancelActiveSearch();
-            _testRunCts?.Cancel();
             ViewModel.StatusText = "Cancellation requested...";
             return;
+        }
+
+        if (ViewModel.IsRunningTests)
+        {
+            _testRunCts?.Cancel();
+            _testRunCts?.Dispose();
+            _testRunCts = null;
         }
 
         _ = RefreshTestsAsync();
@@ -265,7 +312,7 @@ public partial class TestLensToolWindowControl : UserControl
     private async Task RefreshTestsAsync()
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-        await FindCoveringTestsCommand.StartSearchAsync();
+        await FindCoveringTestsCommand.StartSearchAsync(refreshCurrentTarget: true);
     }
 
     private void TreeView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -334,36 +381,6 @@ public partial class TestLensToolWindowControl : UserControl
         {
             await VS.MessageBox.ShowErrorAsync("TestLens", $"Failed to open file: {ex.Message}");
         }
-    }
-
-    private static async Task TriggerTestExplorerAsync(DTE dte)
-    {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-        try
-        {
-            dte.ExecuteCommand("TestExplorer.ShowTestExplorer");
-        }
-        catch { }
-
-        try
-        {
-            dte.ExecuteCommand("Test.RunTestsInCurrentContext");
-            return;
-        }
-        catch { }
-
-        try
-        {
-            dte.ExecuteCommand("TestExplorer.RunSelectedTests");
-            return;
-        }
-        catch { }
-
-        try
-        {
-            dte.ExecuteCommand("EditorContextMenus.CodeWindow.RunTests");
-        }
-        catch { }
     }
 
     private static async Task<string?> ResolveSolutionPathAsync(DTE? dte)

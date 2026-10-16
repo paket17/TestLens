@@ -19,4 +19,10 @@
     <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Content Update="@(Content)">
+      <Visible Condition="'%(Content.NuGetPackageId)' == 'Microsoft.CodeAnalysis.Workspaces.MSBuild'">false</Visible>
+    </Content>
+  </ItemGroup>
+
 </Project>

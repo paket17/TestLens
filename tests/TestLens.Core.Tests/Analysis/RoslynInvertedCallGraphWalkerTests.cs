@@ -1,9 +1,9 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using TestLens.Core.Analysis;
 using TestLens.Core.Detection;
 using TestLens.Core.Detection.Detectors;
 using TestLens.Core.Tests.Helpers;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace TestLens.Core.Tests.Analysis;
 
@@ -61,15 +61,15 @@ public class RoslynInvertedCallGraphWalkerTests
             targetSymbol,
             new CoverageSearchOptions());
 
-        Assert.True(result.IsCovered);
-        Assert.Single(result.CoveringTests);
+        result.IsCovered.Should().BeTrue();
+        result.CoveringTests.Should().ContainSingle();
 
         var match = result.CoveringTests[0];
-        Assert.Equal("MyDirectTest", match.TestMethod.MethodName);
-        Assert.Equal(1, match.MinDepth);
-        Assert.True(match.HasDirectCall);
-        Assert.Single(match.CallChains);
-        Assert.Equal(1, match.CallChains[0].Depth);
+        match.TestMethod.MethodName.Should().Be("MyDirectTest");
+        match.MinDepth.Should().Be(1);
+        match.HasDirectCall.Should().BeTrue();
+        match.CallChains.Should().ContainSingle();
+        match.CallChains[0].Depth.Should().Be(1);
     }
 
     [Fact]
@@ -121,22 +121,22 @@ public class RoslynInvertedCallGraphWalkerTests
             targetSymbol,
             new CoverageSearchOptions());
 
-        Assert.True(result.IsCovered);
-        Assert.Single(result.CoveringTests);
+        result.IsCovered.Should().BeTrue();
+        result.CoveringTests.Should().ContainSingle();
 
         var match = result.CoveringTests[0];
-        Assert.Equal("RunEndToEnd", match.TestMethod.MethodName);
-        Assert.Equal(3, match.MinDepth);
-        Assert.False(match.HasDirectCall);
+        match.TestMethod.MethodName.Should().Be("RunEndToEnd");
+        match.MinDepth.Should().Be(3);
+        match.HasDirectCall.Should().BeFalse();
 
         var chain = match.CallChains[0];
-        Assert.Equal(3, chain.Depth);
-        Assert.Equal("RunEndToEnd", chain.Steps[0].CallerName);
-        Assert.Equal("RunWorkflow", chain.Steps[0].CalleeName);
-        Assert.Equal("RunWorkflow", chain.Steps[1].CallerName);
-        Assert.Equal("Execute", chain.Steps[1].CalleeName);
-        Assert.Equal("Execute", chain.Steps[2].CallerName);
-        Assert.Equal("TargetMethod", chain.Steps[2].CalleeName);
+        chain.Depth.Should().Be(3);
+        chain.Steps[0].CallerName.Should().Be("RunEndToEnd");
+        chain.Steps[0].CalleeName.Should().Be("RunWorkflow");
+        chain.Steps[1].CallerName.Should().Be("RunWorkflow");
+        chain.Steps[1].CalleeName.Should().Be("Execute");
+        chain.Steps[2].CallerName.Should().Be("Execute");
+        chain.Steps[2].CalleeName.Should().Be("TargetMethod");
     }
 
     [Fact]
@@ -185,9 +185,9 @@ public class RoslynInvertedCallGraphWalkerTests
             targetSymbol,
             new CoverageSearchOptions { FollowInterfaces = true });
 
-        Assert.True(result.IsCovered);
-        Assert.Single(result.CoveringTests);
-        Assert.Equal("TestThroughInterface", result.CoveringTests[0].TestMethod.MethodName);
+        result.IsCovered.Should().BeTrue();
+        result.CoveringTests.Should().ContainSingle();
+        result.CoveringTests[0].TestMethod.MethodName.Should().Be("TestThroughInterface");
     }
 
     [Fact]
@@ -223,9 +223,9 @@ public class RoslynInvertedCallGraphWalkerTests
             targetSymbol,
             new CoverageSearchOptions());
 
-        Assert.False(result.IsCovered);
-        Assert.Empty(result.CoveringTests);
-        Assert.Equal(0, result.TotalCoveringTestsCount);
+        result.IsCovered.Should().BeFalse();
+        result.CoveringTests.Should().BeEmpty();
+        result.TotalCoveringTestsCount.Should().Be(0);
     }
 
     [Fact]
@@ -276,7 +276,7 @@ public class RoslynInvertedCallGraphWalkerTests
             targetSymbol,
             new CoverageSearchOptions());
 
-        Assert.True(result.IsCovered);
-        Assert.Contains(result.CoveringTests, t => t.TestMethod.MethodName == "TestPing");
+        result.IsCovered.Should().BeTrue();
+        result.CoveringTests.Should().Contain(t => t.TestMethod.MethodName == "TestPing");
     }
 }

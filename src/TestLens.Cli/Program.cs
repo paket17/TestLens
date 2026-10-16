@@ -1,14 +1,13 @@
-using System.Text.Json;
-using TestLens.Core.Analysis;
-using TestLens.Core.Execution;
-using TestLens.Core.Execution.Models;
-using TestLens.Core.Extensions;
-using TestLens.Core.Models;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
-using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json;
+using TestLens.Core;
+using TestLens.Core.Analysis;
+using TestLens.Core.Execution;
+using TestLens.Core.Execution.Models;
+using TestLens.Core.Models;
 
 namespace TestLens.Cli;
 
@@ -26,12 +25,12 @@ internal static class Program
             return 0;
         }
 
-        string? solutionPath = GetArgument(args, "--solution", "-s");
-        string? methodName = GetArgument(args, "--method", "-m");
-        string? fileName = GetArgument(args, "--file", "-f");
-        int depth = int.TryParse(GetArgument(args, "--depth", "-d"), out var d) ? d : 5;
-        bool run = args.Contains("--run") || args.Contains("-r");
-        bool json = args.Contains("--json");
+        var solutionPath = GetArgument(args, "--solution", "-s");
+        var methodName = GetArgument(args, "--method", "-m");
+        var fileName = GetArgument(args, "--file", "-f");
+        var depth = int.TryParse(GetArgument(args, "--depth", "-d"), out var d) ? d : 5;
+        var run = args.Contains("--run") || args.Contains("-r");
+        var json = args.Contains("--json");
 
         if (string.IsNullOrWhiteSpace(solutionPath) || string.IsNullOrWhiteSpace(methodName))
         {
@@ -80,7 +79,7 @@ Examples:
 
     private static string? GetArgument(string[] args, params string[] aliases)
     {
-        for (int i = 0; i < args.Length; i++)
+        for (var i = 0; i < args.Length; i++)
         {
             foreach (var alias in aliases)
             {
@@ -88,6 +87,7 @@ Examples:
                     return args[i + 1];
             }
         }
+
         return null;
     }
 
@@ -99,100 +99,27 @@ Examples:
         bool runTests,
         bool outputJson)
     {
-        // Register MSBuild instance
-        if (!MSBuildLocator.IsRegistered)
-        {
-            var instances = MSBuildLocator.QueryVisualStudioInstances().ToArray();
-            if (instances.Length > 0)
-                MSBuildLocator.RegisterInstance(instances.OrderByDescending(i => i.Version).First());
-            else
-                MSBuildLocator.RegisterDefaults();
-        }
+        EnsureMSBuildRegistered();
 
-        // Configure DI via Core factory
-        var serviceProvider = TestLens.Core.TestLensServices.CreateServiceProvider();
-
-        var testFinder = serviceProvider.GetRequiredService<ICoveringTestFinder>();
-        var testRunner = serviceProvider.GetRequiredService<ITestRunner>();
+        var testFinder = TestLensServices.CreateFinder();
+        var testRunner = TestLensServices.CreateTestRunner();
 
         if (!outputJson)
-        {
-            Console.WriteLine("╔════════════════════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║        TestLens CLI - Roslyn Inverted Call Graph Test Finder           ║");
-            Console.WriteLine("╚════════════════════════════════════════════════════════════════════════╝");
-            Console.WriteLine($"Loading solution: {solutionFile.Name}...");
-        }
+            PrintBanner(solutionFile.Name);
 
-        using var workspace = MSBuildWorkspace.Create();
-        workspace.WorkspaceFailed += (_, e) =>
-        {
-            if (!outputJson && e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
-            {
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine($"[MSBuild Diagnostic] {e.Diagnostic.Message}");
-                Console.ResetColor();
-            }
-        };
-
-        var solution = await workspace.OpenSolutionAsync(solutionFile.FullName);
+        var solution = await OpenSolutionAsync(solutionFile.FullName, outputJson);
 
         if (!outputJson)
             Console.WriteLine($"Searching for method '{methodName}' in solution...");
 
-        var candidateMethods = new List<(IMethodSymbol Symbol, Document Document)>();
-
-        foreach (var project in solution.Projects)
-        {
-            foreach (var document in project.Documents)
-            {
-                if (fileName != null && !document.Name.Contains(fileName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (!document.Name.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var syntaxRoot = await document.GetSyntaxRootAsync();
-                if (syntaxRoot == null)
-                    continue;
-
-                var semanticModel = await document.GetSemanticModelAsync();
-                if (semanticModel == null)
-                    continue;
-
-                var methodDeclarations = syntaxRoot.DescendantNodes()
-                    .OfType<MethodDeclarationSyntax>()
-                    .Where(m => string.Equals(m.Identifier.Text, methodName, StringComparison.OrdinalIgnoreCase));
-
-                foreach (var methodDecl in methodDeclarations)
-                {
-                    var symbol = semanticModel.GetDeclaredSymbol(methodDecl);
-                    if (symbol is IMethodSymbol methodSymbol)
-                        candidateMethods.Add((methodSymbol, document));
-                }
-            }
-        }
-
+        var candidateMethods = await FindCandidateMethodsAsync(solution, methodName, fileName);
         if (candidateMethods.Count == 0)
         {
-            if (outputJson)
-                Console.WriteLine(JsonSerializer.Serialize(new { error = $"Method '{methodName}' not found in solution." }));
-            else
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"Method named '{methodName}' not found in code.");
-                Console.ResetColor();
-            }
+            HandleMethodNotFound(methodName, outputJson);
             return;
         }
 
-        var targetEntry = candidateMethods[0];
-        if (candidateMethods.Count > 1 && !outputJson)
-        {
-            Console.WriteLine($"Methods found: {candidateMethods.Count}. Using first match:");
-            Console.WriteLine($"  -> {targetEntry.Symbol.ToDisplayString()} ({targetEntry.Document.FilePath})");
-        }
-
-        var targetMethod = targetEntry.Symbol;
+        var targetMethod = SelectTargetMethod(candidateMethods, outputJson);
 
         var options = new CoverageSearchOptions
         {
@@ -210,6 +137,126 @@ Examples:
             return;
         }
 
+        PrintCoverageResult(result);
+
+        if (runTests && result.IsCovered)
+            await RunCoveringTestsAsync(testRunner, solutionFile.FullName, result.CoveringTests);
+    }
+
+    private static void EnsureMSBuildRegistered()
+    {
+        if (MSBuildLocator.IsRegistered)
+            return;
+
+        var instances = MSBuildLocator.QueryVisualStudioInstances().ToArray();
+        if (instances.Length > 0)
+            MSBuildLocator.RegisterInstance(instances.OrderByDescending(i => i.Version).First());
+        else
+            MSBuildLocator.RegisterDefaults();
+    }
+
+    private static void PrintBanner(string solutionFileName)
+    {
+        Console.WriteLine("╔════════════════════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║        TestLens CLI - Roslyn Inverted Call Graph Test Finder           ║");
+        Console.WriteLine("╚════════════════════════════════════════════════════════════════════════╝");
+        Console.WriteLine($"Loading solution: {solutionFileName}...");
+    }
+
+    private static async Task<Solution> OpenSolutionAsync(string solutionFilePath, bool outputJson)
+    {
+        using var workspace = MSBuildWorkspace.Create();
+        workspace.WorkspaceFailed += (_, e) =>
+        {
+            if (!outputJson && e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"[MSBuild Diagnostic] {e.Diagnostic.Message}");
+                Console.ResetColor();
+            }
+        };
+
+        return await workspace.OpenSolutionAsync(solutionFilePath);
+    }
+
+    private static async Task<List<(IMethodSymbol Symbol, Document Document)>> FindCandidateMethodsAsync(
+        Solution solution,
+        string methodName,
+        string? fileName)
+    {
+        var candidates = new List<(IMethodSymbol Symbol, Document Document)>();
+
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (fileName != null && !document.Name.Contains(fileName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!document.Name.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                await CollectMethodsFromDocumentAsync(document, methodName, candidates);
+            }
+        }
+
+        return candidates;
+    }
+
+    private static async Task CollectMethodsFromDocumentAsync(
+        Document document,
+        string methodName,
+        List<(IMethodSymbol Symbol, Document Document)> candidates)
+    {
+        var syntaxRoot = await document.GetSyntaxRootAsync();
+        if (syntaxRoot == null)
+            return;
+
+        var semanticModel = await document.GetSemanticModelAsync();
+        if (semanticModel == null)
+            return;
+
+        var methodDeclarations = syntaxRoot.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => string.Equals(m.Identifier.Text, methodName, StringComparison.OrdinalIgnoreCase));
+
+        foreach (var methodDecl in methodDeclarations)
+        {
+            var symbol = semanticModel.GetDeclaredSymbol(methodDecl);
+            if (symbol is IMethodSymbol methodSymbol)
+                candidates.Add((methodSymbol, document));
+        }
+    }
+
+    private static void HandleMethodNotFound(string methodName, bool outputJson)
+    {
+        if (outputJson)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { error = $"Method '{methodName}' not found in solution." }));
+            return;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"Method named '{methodName}' not found in code.");
+        Console.ResetColor();
+    }
+
+    private static IMethodSymbol SelectTargetMethod(
+        IReadOnlyList<(IMethodSymbol Symbol, Document Document)> candidateMethods,
+        bool outputJson)
+    {
+        var targetEntry = candidateMethods[0];
+        if (candidateMethods.Count > 1 && !outputJson)
+        {
+            Console.WriteLine($"Methods found: {candidateMethods.Count}. Using first match:");
+            Console.WriteLine($"  -> {targetEntry.Symbol.ToDisplayString()} ({targetEntry.Document.FilePath})");
+        }
+
+        return targetEntry.Symbol;
+    }
+
+    private static void PrintCoverageResult(MethodCoverageResult result)
+    {
         Console.WriteLine();
         Console.WriteLine("------------------------------------------------------------------------");
         Console.Write("Target method: ");
@@ -231,85 +278,95 @@ Examples:
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine("NOT COVERED BY TESTS (0 calls from tests found)");
         }
-        Console.ResetColor();
 
+        Console.ResetColor();
         Console.WriteLine($"Analysis time: {result.ElapsedTime.TotalMilliseconds:F1} ms");
         Console.WriteLine("------------------------------------------------------------------------");
 
         if (result.IsCovered)
+            PrintCoveringTests(result.CoveringTests);
+    }
+
+    private static void PrintCoveringTests(IReadOnlyList<CoveringTestMatch> coveringTests)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Covering tests and call chains:");
+
+        for (var i = 0; i < coveringTests.Count; i++)
         {
+            var match = coveringTests[i];
+            var test = match.TestMethod;
+
             Console.WriteLine();
-            Console.WriteLine("Covering tests and call chains:");
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write($"[{i + 1}] [{test.Framework}] ");
+            Console.ResetColor();
+            Console.Write($"{test.FullyQualifiedName} ");
 
-            for (int i = 0; i < result.CoveringTests.Count; i++)
-            {
-                var match = result.CoveringTests[i];
-                var test = match.TestMethod;
+            Console.ForegroundColor = match.HasDirectCall ? ConsoleColor.Green : ConsoleColor.DarkYellow;
+            Console.WriteLine($"({(match.HasDirectCall ? "Direct call" : $"Indirect call, depth: {match.MinDepth}")})");
+            Console.ResetColor();
 
-                Console.WriteLine();
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.Write($"[{i + 1}] [{test.Framework}] ");
-                Console.ResetColor();
-                Console.Write($"{test.FullyQualifiedName} ");
+            if (!string.IsNullOrEmpty(test.DisplayName))
+                Console.WriteLine($"    Display: \"{test.DisplayName}\"");
 
-                Console.ForegroundColor = match.HasDirectCall ? ConsoleColor.Green : ConsoleColor.DarkYellow;
-                Console.WriteLine($"({(match.HasDirectCall ? "Direct call" : $"Indirect call, depth: {match.MinDepth}")})");
-                Console.ResetColor();
-
-                if (!string.IsNullOrEmpty(test.DisplayName))
-                    Console.WriteLine($"    Display: \"{test.DisplayName}\"");
-
-                foreach (var chain in match.CallChains)
-                {
-                    Console.WriteLine("    Call chain:");
-                    for (int s = 0; s < chain.Steps.Count; s++)
-                    {
-                        var step = chain.Steps[s];
-                        var prefix = s == chain.Steps.Count - 1 ? "    └─ " : "    ├─ ";
-                        var stepKindStr = step.StepKind != CallChainStepKind.DirectCall ? $" [{step.StepKind}]" : "";
-                        var snippet = !string.IsNullOrEmpty(step.CodeSnippet) ? $" : \"{step.CodeSnippet}\"" : "";
-
-                        Console.ForegroundColor = ConsoleColor.DarkGray;
-                        Console.Write(prefix);
-                        Console.ResetColor();
-                        Console.WriteLine($"{step.CallerName} -> {step.CalleeName}{stepKindStr} (Line {step.LineNumber}){snippet}");
-                    }
-                }
-            }
-
-            if (runTests)
-            {
-                Console.WriteLine();
-                Console.WriteLine("════════════════════════════════════════════════════════════════════════");
-                Console.WriteLine("Running discovered tests via 'dotnet test'...");
-                Console.WriteLine("════════════════════════════════════════════════════════════════════════");
-
-                var runRequest = new TestRunRequest
-                {
-                    SolutionOrProjectPath = solutionFile.FullName,
-                    TestsToRun = result.CoveringTests.Select(t => t.TestMethod).ToList()
-                };
-
-                var runResult = await testRunner.RunTestsAsync(runRequest, line =>
-                {
-                    Console.WriteLine($"  [Test Output] {line}");
-                });
-
-                Console.WriteLine();
-                if (runResult.Success)
-                {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"✓ ALL TESTS PASSED! (Passed: {runResult.PassedCount}, Duration: {runResult.Duration.TotalSeconds:F2}s)");
-                }
-                else
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"✗ FAILED: Tests failed! (Failed: {runResult.FailedCount}, Passed: {runResult.PassedCount})");
-                    if (!string.IsNullOrEmpty(runResult.ErrorMessage))
-                        Console.WriteLine($"  {runResult.ErrorMessage}");
-                }
-                Console.ResetColor();
-            }
+            foreach (var chain in match.CallChains)
+                PrintCallChain(chain);
         }
+    }
+
+    private static void PrintCallChain(CallChain chain)
+    {
+        Console.WriteLine("    Call chain:");
+        for (var s = 0; s < chain.Steps.Count; s++)
+        {
+            var step = chain.Steps[s];
+            var prefix = s == chain.Steps.Count - 1 ? "    └─ " : "    ├─ ";
+            var stepKindStr = step.StepKind != CallChainStepKind.DirectCall ? $" [{step.StepKind}]" : string.Empty;
+            var snippet = !string.IsNullOrEmpty(step.CodeSnippet) ? $" : \"{step.CodeSnippet}\"" : string.Empty;
+
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write(prefix);
+            Console.ResetColor();
+            Console.WriteLine($"{step.CallerName} -> {step.CalleeName}{stepKindStr} (Line {step.LineNumber}){snippet}");
+        }
+    }
+
+    private static async Task RunCoveringTestsAsync(
+        ITestRunner testRunner,
+        string solutionPath,
+        IReadOnlyList<CoveringTestMatch> coveringTests)
+    {
+        Console.WriteLine();
+        Console.WriteLine("════════════════════════════════════════════════════════════════════════");
+        Console.WriteLine("Running discovered tests via 'dotnet test'...");
+        Console.WriteLine("════════════════════════════════════════════════════════════════════════");
+
+        var runRequest = new TestRunRequest
+        {
+            SolutionOrProjectPath = solutionPath,
+            TestsToRun = coveringTests.Select(t => t.TestMethod).ToList()
+        };
+
+        var runResult = await testRunner.RunTestsAsync(runRequest, line =>
+        {
+            Console.WriteLine($"  [Test Output] {line}");
+        });
+
+        Console.WriteLine();
+        if (runResult.Success)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"✓ ALL TESTS PASSED! (Passed: {runResult.PassedCount}, Duration: {runResult.Duration.TotalSeconds:F2}s)");
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"✗ FAILED: Tests failed! (Failed: {runResult.FailedCount}, Passed: {runResult.PassedCount})");
+            if (!string.IsNullOrEmpty(runResult.ErrorMessage))
+                Console.WriteLine($"  {runResult.ErrorMessage}");
+        }
+
+        Console.ResetColor();
     }
 }

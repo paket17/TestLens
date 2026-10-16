@@ -98,7 +98,11 @@
 
                     <!-- Buttons shifted to the LEFT -->
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                        <Button x:Name="BtnRunAll" Content="▶ Run All" Click="BtnRunAll_Click" 
+                        <Button x:Name="BtnRunAll" 
+                                Content="{Binding RunAllButtonText, FallbackValue='▶ Run All'}" 
+                                ToolTip="{Binding RunAllButtonToolTip, FallbackValue='Run all covering tests'}"
+                                IsEnabled="{Binding IsRunAllEnabled, FallbackValue=True}"
+                                Click="BtnRunAll_Click" 
                                 Style="{StaticResource VsPrimaryButton}" Padding="10,3" Margin="0,0,6,0"/>
                         <Button x:Name="BtnRefresh" Content="{Binding RefreshButtonText, FallbackValue='🔄 Refresh'}" 
                                 ToolTip="{Binding RefreshButtonToolTip, FallbackValue='Refresh covering tests'}"
@@ -202,7 +206,11 @@
                             </Grid.ColumnDefinitions>
 
                             <!-- 1. Run button on the left -->
-                            <Button Grid.Column="0" Content="▶ Run" Click="BtnRunSingleTest_Click" 
+                            <Button Grid.Column="0" 
+                                    Content="{Binding RunButtonText, FallbackValue='▶ Run'}" 
+                                    ToolTip="{Binding RunButtonToolTip, FallbackValue='Run this test'}"
+                                    IsEnabled="{Binding IsRunButtonEnabled, FallbackValue=True}"
+                                    Click="BtnRunSingleTest_Click" 
                                     Style="{StaticResource VsFlatButton}" Padding="7,2" Margin="0,0,4,0" 
                                     FontWeight="SemiBold" FontSize="11"/>
 

@@ -15,7 +15,9 @@ public sealed class DotNetCliTestRunner(
     ILogger<DotNetCliTestRunner>? logger = null) : ITestRunner
 {
     private static readonly Regex PassedRegex = new(@"Passed:\s*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex FailedRegex = new(@"Failed:\s*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex SkippedRegex = new(@"Skipped:\s*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public Task<TestRunResult> RunSingleTestAsync(
@@ -55,16 +57,16 @@ public sealed class DotNetCliTestRunner(
         }
 
         var filter = BuildFilter(request.TestsToRun);
-        var args = new StringBuilder();
-        args.Append("test ");
-        args.Append($"\"{request.SolutionOrProjectPath}\" ");
-        args.Append($"--filter \"{filter}\" ");
-        args.Append("--logger \"console;verbosity=normal\" ");
+        var sb = new StringBuilder();
+        sb.Append("test ");
+        sb.Append($"\"{request.SolutionOrProjectPath}\" ");
+        sb.Append($"--filter \"{filter}\" ");
+        sb.Append("--logger \"console;verbosity=normal\" ");
 
         if (request.NoBuild)
-            args.Append("--no-build ");
+            sb.Append("--no-build ");
 
-        var workingDir = File.Exists(request.SolutionOrProjectPath)
+        var workingDirectory = File.Exists(request.SolutionOrProjectPath)
             ? Path.GetDirectoryName(request.SolutionOrProjectPath)
             : Directory.Exists(request.SolutionOrProjectPath)
                 ? request.SolutionOrProjectPath
@@ -73,8 +75,8 @@ public sealed class DotNetCliTestRunner(
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
-            Arguments = args.ToString(),
-            WorkingDirectory = workingDir ?? string.Empty,
+            Arguments = sb.ToString(),
+            WorkingDirectory = workingDirectory ?? string.Empty,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,

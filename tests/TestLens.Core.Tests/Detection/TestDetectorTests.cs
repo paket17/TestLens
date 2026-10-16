@@ -1,9 +1,9 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using TestLens.Core.Detection;
 using TestLens.Core.Detection.Detectors;
 using TestLens.Core.Models;
 using TestLens.Core.Tests.Helpers;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace TestLens.Core.Tests.Detection;
 
@@ -36,19 +36,19 @@ public class TestDetectorTests
         // 1. Fact
         var symbol1 = (IMethodSymbol)semanticModel!.GetDeclaredSymbol(methods[0])!;
         var isTest1 = detector.IsTestMethod(symbol1, out var displayName1);
-        Assert.True(isTest1);
-        Assert.Equal("Custom Fact Name", displayName1);
+        isTest1.Should().BeTrue();
+        displayName1.Should().Be("Custom Fact Name");
 
         // 2. Theory
         var symbol2 = (IMethodSymbol)semanticModel!.GetDeclaredSymbol(methods[1])!;
         var isTest2 = detector.IsTestMethod(symbol2, out var displayName2);
-        Assert.True(isTest2);
-        Assert.Null(displayName2);
+        isTest2.Should().BeTrue();
+        displayName2.Should().BeNull();
 
         // 3. Regular
         var symbol3 = (IMethodSymbol)semanticModel!.GetDeclaredSymbol(methods[2])!;
         var isTest3 = detector.IsTestMethod(symbol3, out _);
-        Assert.False(isTest3);
+        isTest3.Should().BeFalse();
     }
 
     [Fact]
@@ -82,13 +82,13 @@ public class TestDetectorTests
 
         var result = composite.TryGetTestDescriptor(methodSymbol, out var descriptor);
 
-        Assert.True(result);
-        Assert.NotNull(descriptor);
-        Assert.Equal("MyTest", descriptor.MethodName);
-        Assert.Equal("TestClass", descriptor.ClassName);
-        Assert.Equal("MyNamespace", descriptor.Namespace);
-        Assert.Equal(TestFrameworkType.XUnit, descriptor.Framework);
-        Assert.Equal("MyNamespace.TestClass.MyTest", descriptor.FullyQualifiedName);
+        result.Should().BeTrue();
+        descriptor.Should().NotBeNull();
+        descriptor!.MethodName.Should().Be("MyTest");
+        descriptor.ClassName.Should().Be("TestClass");
+        descriptor.Namespace.Should().Be("MyNamespace");
+        descriptor.Framework.Should().Be(TestFrameworkType.XUnit);
+        descriptor.FullyQualifiedName.Should().Be("MyNamespace.TestClass.MyTest");
     }
 
     [Fact]
@@ -125,11 +125,11 @@ public class TestDetectorTests
         var detector = new NUnitTestDetector();
 
         var isTest1 = detector.IsTestMethod((IMethodSymbol)semanticModel!.GetDeclaredSymbol(methods[0])!, out _);
-        Assert.True(isTest1);
+        isTest1.Should().BeTrue();
 
         var isTest2 = detector.IsTestMethod((IMethodSymbol)semanticModel!.GetDeclaredSymbol(methods[1])!, out var desc);
-        Assert.True(isTest2);
-        Assert.Equal("NUnit description", desc);
+        isTest2.Should().BeTrue();
+        desc.Should().Be("NUnit description");
     }
 
     [Fact]
@@ -161,8 +161,8 @@ public class TestDetectorTests
         var detector = new MSTestDetector();
         var isTest = detector.IsTestMethod((IMethodSymbol)semanticModel!.GetDeclaredSymbol(method)!, out var name);
 
-        Assert.True(isTest);
-        Assert.Equal("MSTest method", name);
+        isTest.Should().BeTrue();
+        name.Should().Be("MSTest method");
     }
 }
 

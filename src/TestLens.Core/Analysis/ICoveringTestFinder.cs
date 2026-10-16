@@ -1,5 +1,5 @@
-using TestLens.Core.Models;
 using Microsoft.CodeAnalysis;
+using TestLens.Core.Models;
 
 namespace TestLens.Core.Analysis;
 

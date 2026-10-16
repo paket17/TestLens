@@ -17,6 +17,7 @@ public sealed class RoslynInvertedCallGraphWalker(
 {
     private readonly ICallerResolver _callerResolver = 
         callerResolver ?? throw new ArgumentNullException(nameof(callerResolver));
+
     private readonly ITestDetector _testDetector = 
         testDetector ?? throw new ArgumentNullException(nameof(testDetector));
 
@@ -25,8 +26,10 @@ public sealed class RoslynInvertedCallGraphWalker(
         IMethodSymbol targetMethod,
         CoverageSearchOptions options,
         IProgress<string>? progress = null,
-        CancellationToken cancellationToken = default) =>
-        FindCoveringTestsAsync(solution, targetMethod, options, progress, null, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return FindCoveringTestsAsync(solution, targetMethod, options, progress, null, cancellationToken);
+    }
 
     public async Task<MethodCoverageResult> FindCoveringTestsAsync(
         Solution solution,
@@ -41,9 +44,181 @@ public sealed class RoslynInvertedCallGraphWalker(
         CompatExtensions.ThrowIfNull(options, nameof(options));
 
         var stopwatch = Stopwatch.StartNew();
-        var diagnostics = new List<string>();
+        var context = new TraversalContext(targetMethod, options);
 
-        // Target method metadata
+        await TraverseCallGraphAsync(solution, context, progress, onTestFound, cancellationToken)
+            .ConfigureAwait(false);
+
+        stopwatch.Stop();
+        return BuildCoverageResult(context, stopwatch.Elapsed);
+    }
+
+    private async Task TraverseCallGraphAsync(
+        Solution solution,
+        TraversalContext context,
+        IProgress<string>? progress,
+        IProgress<CoveringTestMatch>? onTestFound,
+        CancellationToken cancellationToken)
+    {
+        while (context.Queue.Count > 0)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                context.Diagnostics.Add("Search was interrupted by user request or timeout.");
+                return;
+            }
+
+            var currentNode = context.Queue.Dequeue();
+            var currentDepth = currentNode.StepsFromCurrentToTarget.Count;
+
+            if (currentDepth >= context.Options.MaxCallDepth)
+                continue;
+
+            context.ExploredCount++;
+            if (context.ExploredCount > context.Options.MaxExploredMethods)
+            {
+                context.Diagnostics.Add($"Explored limit ({context.Options.MaxExploredMethods} methods) reached. Search completed.");
+                return;
+            }
+
+            ReportProgress(progress, context, currentDepth);
+
+            var callers = await FetchCallersAsync(solution, currentNode.CurrentMethod, context, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (callers == null)
+                return;
+
+            ProcessCallers(callers, currentNode, context, onTestFound, cancellationToken);
+
+            if (context.HasReachedMaxResults())
+                return;
+        }
+    }
+
+    private async Task<IReadOnlyList<DiscoveredCaller>?> FetchCallersAsync(
+        Solution solution,
+        IMethodSymbol method,
+        TraversalContext context,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _callerResolver.FindCallersAsync(
+                solution,
+                method,
+                context.Options,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            context.Diagnostics.Add("Search was canceled.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Error finding callers for symbol {Symbol}", method.ToDisplayString());
+            context.Diagnostics.Add($"Analysis error for {method.Name}: {ex.Message}");
+            return [];
+        }
+    }
+
+    private void ProcessCallers(
+        IReadOnlyList<DiscoveredCaller> callers,
+        PathNode currentNode,
+        TraversalContext context,
+        IProgress<CoveringTestMatch>? onTestFound,
+        CancellationToken cancellationToken)
+    {
+        foreach (var caller in callers)
+        {
+            if (cancellationToken.IsCancellationRequested)
+                break;
+
+            // Защита от циклов в текущей ветке вызовов
+            if (currentNode.VisitedSymbols.Contains(caller.CallerSymbol))
+                continue;
+
+            var updatedSteps = CreateSteps(currentNode, caller);
+
+            if (TryHandleTestCaller(caller.CallerSymbol, updatedSteps, context, onTestFound))
+            {
+                if (context.HasReachedMaxResults())
+                    break;
+
+                continue;
+            }
+
+            EnqueueNonTestCaller(caller.CallerSymbol, updatedSteps, currentNode, context);
+        }
+    }
+
+    private static List<CallChainStep> CreateSteps(PathNode currentNode, DiscoveredCaller caller)
+    {
+        var step = new CallChainStep
+        {
+            CallerName = caller.CallerSymbol.Name,
+            CallerFullyQualifiedName = caller.CallerSymbol.ToDisplayString(),
+            CalleeName = caller.CalleeSymbol.Name,
+            CalleeFullyQualifiedName = caller.CalleeSymbol.ToDisplayString(),
+            FilePath = caller.FilePath,
+            LineNumber = caller.LineNumber,
+            CodeSnippet = caller.CodeSnippet,
+            StepKind = caller.StepKind
+        };
+
+        var steps = new List<CallChainStep>(currentNode.StepsFromCurrentToTarget.Count + 1) { step };
+        steps.AddRange(currentNode.StepsFromCurrentToTarget);
+        return steps;
+    }
+
+    private bool TryHandleTestCaller(
+        IMethodSymbol callerSymbol,
+        List<CallChainStep> steps,
+        TraversalContext context,
+        IProgress<CoveringTestMatch>? onTestFound)
+    {
+        if (!_testDetector.TryGetTestDescriptor(callerSymbol, out var testDescriptor))
+            return false;
+
+        if (context.Options.TestProjectFilter is { Count: > 0 } &&
+            !context.Options.TestProjectFilter.Contains(testDescriptor.ProjectName, StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        context.RegisterFoundTest(testDescriptor, steps, onTestFound);
+        return true;
+    }
+
+    private static void EnqueueNonTestCaller(
+        IMethodSymbol callerSymbol,
+        List<CallChainStep> steps,
+        PathNode currentNode,
+        TraversalContext context)
+    {
+        var nextDepth = steps.Count;
+        if (context.MinDepthByMethod.TryGetValue(callerSymbol, out var prevMinDepth) && nextDepth >= prevMinDepth)
+            return;
+
+        context.MinDepthByMethod[callerSymbol] = nextDepth;
+
+        var visitedSymbols = new HashSet<ISymbol>(currentNode.VisitedSymbols, SymbolEqualityComparer.Default)
+        {
+            callerSymbol
+        };
+
+        context.Queue.Enqueue(new PathNode(callerSymbol, steps, visitedSymbols));
+    }
+
+    private static void ReportProgress(IProgress<string>? progress, TraversalContext context, int currentDepth) =>
+        progress?.Report($"Depth {currentDepth + 1}/{context.Options.MaxCallDepth} | Checked {context.ExploredCount} methods | Found {context.FoundTests.Count} test(s)...");
+
+    private static MethodCoverageResult BuildCoverageResult(
+        TraversalContext context,
+        TimeSpan elapsed)
+    {
+        var targetMethod = context.TargetMethod;
         var targetLocation = targetMethod.Locations.FirstOrDefault(l => l.IsInSource);
         var targetLineSpan = targetLocation?.GetLineSpan();
         var targetFilePath = targetLineSpan?.Path;
@@ -54,155 +229,7 @@ public sealed class RoslynInvertedCallGraphWalker(
             ? $"{targetMethod.ContainingType.ToDisplayString()}.{targetMethod.Name}"
             : targetMethod.Name;
 
-        // Discovered tests: FQN -> (Descriptor, Chains)
-        var foundTests = new Dictionary<string, (TestMethodDescriptor Descriptor, List<CallChain> Chains)>(StringComparer.OrdinalIgnoreCase);
-
-        // Tracks minimum depth each method was visited to eliminate exponential graph explosion
-        var minDepthByMethod = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default)
-        {
-            [targetMethod] = 0
-        };
-
-        // BFS queue for reverse call graph traversal
-        var queue = new Queue<PathNode>();
-        queue.Enqueue(new PathNode
-        {
-            CurrentMethod = targetMethod,
-            StepsFromCurrentToTarget = new List<CallChainStep>(),
-            VisitedSymbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { targetMethod }
-        });
-
-        var exploredCount = 0;
-
-        while (queue.Count > 0)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                diagnostics.Add("Search was interrupted by user request or timeout.");
-                break;
-            }
-
-            var currentNode = queue.Dequeue();
-            var currentDepth = currentNode.StepsFromCurrentToTarget.Count;
-
-            if (currentDepth >= options.MaxCallDepth)
-                continue;
-
-            exploredCount++;
-            if (exploredCount > options.MaxExploredMethods)
-            {
-                diagnostics.Add($"Explored limit ({options.MaxExploredMethods} methods) reached. Search completed.");
-                break;
-            }
-
-            progress?.Report($"Depth {currentDepth + 1}/{options.MaxCallDepth} | Checked {exploredCount} methods | Found {foundTests.Count} test(s)...");
-
-            IReadOnlyList<DiscoveredCaller> callers;
-            try
-            {
-                callers = await _callerResolver.FindCallersAsync(
-                    solution,
-                    currentNode.CurrentMethod,
-                    options,
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                diagnostics.Add("Search was canceled.");
-                break;
-            }
-            catch (Exception ex)
-            {
-                logger?.LogWarning(ex, "Error finding callers for symbol {Symbol}", currentNode.CurrentMethod.ToDisplayString());
-                diagnostics.Add($"Analysis error for {currentNode.CurrentMethod.Name}: {ex.Message}");
-                continue;
-            }
-
-            foreach (var caller in callers)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                    break;
-
-                // Cycle prevention in current branch
-                if (currentNode.VisitedSymbols.Contains(caller.CallerSymbol))
-                    continue;
-
-                var step = new CallChainStep
-                {
-                    CallerName = caller.CallerSymbol.Name,
-                    CallerFullyQualifiedName = caller.CallerSymbol.ToDisplayString(),
-                    CalleeName = caller.CalleeSymbol.Name,
-                    CalleeFullyQualifiedName = caller.CalleeSymbol.ToDisplayString(),
-                    FilePath = caller.FilePath,
-                    LineNumber = caller.LineNumber,
-                    CodeSnippet = caller.CodeSnippet,
-                    StepKind = caller.StepKind
-                };
-
-                var updatedSteps = new List<CallChainStep>(currentNode.StepsFromCurrentToTarget.Count + 1) { step };
-                updatedSteps.AddRange(currentNode.StepsFromCurrentToTarget);
-
-                // Check if caller is a test method
-                if (_testDetector.TryGetTestDescriptor(caller.CallerSymbol, out var testDescriptor))
-                {
-                    if (options.TestProjectFilter is { Count: > 0 } &&
-                        !options.TestProjectFilter.Contains(testDescriptor.ProjectName, StringComparer.OrdinalIgnoreCase))
-                        continue;
-
-                    var callChain = new CallChain
-                    {
-                        TestMethod = testDescriptor,
-                        Steps = updatedSteps
-                    };
-
-                    if (!foundTests.TryGetValue(testDescriptor.FullyQualifiedName, out var entry))
-                    {
-                        entry = (testDescriptor, new List<CallChain>());
-                        foundTests[testDescriptor.FullyQualifiedName] = entry;
-                    }
-
-                    entry.Chains.Add(callChain);
-
-                    onTestFound?.Report(new CoveringTestMatch
-                    {
-                        TestMethod = testDescriptor,
-                        CallChains = new List<CallChain>(entry.Chains)
-                    });
-
-                    if (options.MaxTestResults > 0 && foundTests.Count >= options.MaxTestResults)
-                        break;
-
-                    continue;
-                }
-
-                // If non-test, check if we've already reached this method at a shorter or equal depth
-                var nextDepth = currentDepth + 1;
-                if (minDepthByMethod.TryGetValue(caller.CallerSymbol, out var prevMinDepth) && nextDepth >= prevMinDepth)
-                    continue;
-
-                minDepthByMethod[caller.CallerSymbol] = nextDepth;
-
-                var newVisited = new HashSet<ISymbol>(currentNode.VisitedSymbols, SymbolEqualityComparer.Default)
-                {
-                    caller.CallerSymbol
-                };
-
-                queue.Enqueue(new PathNode
-                {
-                    CurrentMethod = caller.CallerSymbol,
-                    StepsFromCurrentToTarget = updatedSteps,
-                    VisitedSymbols = newVisited
-                });
-            }
-
-            if (options.MaxTestResults > 0 && foundTests.Count >= options.MaxTestResults)
-                break;
-        }
-
-        stopwatch.Stop();
-
-        // Формируем результирующий список тестов, отсортированный по минимальной глубине
-        var matches = foundTests.Values
+        var matches = context.FoundTests.Values
             .Select(v => new CoveringTestMatch
             {
                 TestMethod = v.Descriptor,
@@ -220,15 +247,62 @@ public sealed class RoslynInvertedCallGraphWalker(
             TargetFilePath = targetFilePath,
             TargetLineNumber = targetLineNumber,
             CoveringTests = matches,
-            ElapsedTime = stopwatch.Elapsed,
-            Diagnostics = diagnostics
+            ElapsedTime = elapsed,
+            Diagnostics = context.Diagnostics
         };
     }
 
-    private sealed class PathNode
+    private sealed class TraversalContext(IMethodSymbol targetMethod, CoverageSearchOptions options)
     {
-        public required IMethodSymbol CurrentMethod { get; init; }
-        public required List<CallChainStep> StepsFromCurrentToTarget { get; init; }
-        public required HashSet<ISymbol> VisitedSymbols { get; init; }
+        public IMethodSymbol TargetMethod { get; } = targetMethod;
+
+        public CoverageSearchOptions Options { get; } = options;
+
+        public List<string> Diagnostics { get; } = [];
+
+        public Dictionary<string, (TestMethodDescriptor Descriptor, List<CallChain> Chains)> FoundTests { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public Dictionary<ISymbol, int> MinDepthByMethod { get; } =
+            new(SymbolEqualityComparer.Default) { [targetMethod] = 0 };
+
+        public Queue<PathNode> Queue { get; } =
+            new([new PathNode(targetMethod, [], new HashSet<ISymbol>(SymbolEqualityComparer.Default) { targetMethod })]);
+
+        public int ExploredCount { get; set; }
+
+        public bool HasReachedMaxResults() =>
+            Options.MaxTestResults > 0 && FoundTests.Count >= Options.MaxTestResults;
+
+        public void RegisterFoundTest(
+            TestMethodDescriptor descriptor,
+            List<CallChainStep> steps,
+            IProgress<CoveringTestMatch>? onTestFound)
+        {
+            var callChain = new CallChain
+            {
+                TestMethod = descriptor,
+                Steps = steps
+            };
+
+            if (!FoundTests.TryGetValue(descriptor.FullyQualifiedName, out var entry))
+            {
+                entry = (descriptor, []);
+                FoundTests[descriptor.FullyQualifiedName] = entry;
+            }
+
+            entry.Chains.Add(callChain);
+
+            onTestFound?.Report(new CoveringTestMatch
+            {
+                TestMethod = descriptor,
+                CallChains = [.. entry.Chains]
+            });
+        }
     }
+
+    private sealed record class PathNode(
+        IMethodSymbol CurrentMethod,
+        List<CallChainStep> StepsFromCurrentToTarget,
+        HashSet<ISymbol> VisitedSymbols);
 }

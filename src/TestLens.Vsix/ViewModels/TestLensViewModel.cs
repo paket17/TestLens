@@ -1,8 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Linq;
-using System.Runtime.CompilerServices;
+using System.Windows.Media;
 using TestLens.Core.Models;
 
 namespace TestLens.Vsix.ViewModels;
@@ -12,7 +11,8 @@ public enum TestExecutionStatus
     NotRun,
     Running,
     Passed,
-    Failed
+    Failed,
+    Skipped
 }
 
 public enum CoverageState
@@ -22,26 +22,19 @@ public enum CoverageState
     NotCovered
 }
 
-public sealed class TestLensViewModel : INotifyPropertyChanged
+public sealed class TestLensViewModel : ViewModelBase
 {
-    private static readonly System.Windows.Media.Brush NeutralBackground = CreateFrozenBrush(0x2a, 0x38, 0x82, 0xf6);
-    private static readonly System.Windows.Media.Brush NeutralBorder = CreateFrozenBrush(0x55, 0x38, 0x82, 0xf6);
-    private static readonly System.Windows.Media.Brush NeutralText = CreateFrozenBrush(0xff, 0x93, 0xc5, 0xfd);
+    private static readonly Brush NeutralBackground = CreateFrozenBrush(0x2a, 0x38, 0x82, 0xf6);
+    private static readonly Brush NeutralBorder = CreateFrozenBrush(0x55, 0x38, 0x82, 0xf6);
+    private static readonly Brush NeutralText = CreateFrozenBrush(0xff, 0x93, 0xc5, 0xfd);
 
-    private static readonly System.Windows.Media.Brush CoveredBackground = CreateFrozenBrush(0x22, 0x22, 0xc5, 0x5e);
-    private static readonly System.Windows.Media.Brush CoveredBorder = CreateFrozenBrush(0x50, 0x22, 0xc5, 0x5e);
-    private static readonly System.Windows.Media.Brush CoveredText = CreateFrozenBrush(0xff, 0x4a, 0xde, 0x80);
+    private static readonly Brush CoveredBackground = CreateFrozenBrush(0x22, 0x22, 0xc5, 0x5e);
+    private static readonly Brush CoveredBorder = CreateFrozenBrush(0x50, 0x22, 0xc5, 0x5e);
+    private static readonly Brush CoveredText = CreateFrozenBrush(0xff, 0x4a, 0xde, 0x80);
 
-    private static readonly System.Windows.Media.Brush NotCoveredBackground = CreateFrozenBrush(0x22, 0xef, 0x44, 0x44);
-    private static readonly System.Windows.Media.Brush NotCoveredBorder = CreateFrozenBrush(0x50, 0xef, 0x44, 0x44);
-    private static readonly System.Windows.Media.Brush NotCoveredText = CreateFrozenBrush(0xff, 0xf8, 0x71, 0x71);
-
-    private static System.Windows.Media.Brush CreateFrozenBrush(byte a, byte r, byte g, byte b)
-    {
-        var brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(a, r, g, b));
-        brush.Freeze();
-        return brush;
-    }
+    private static readonly Brush NotCoveredBackground = CreateFrozenBrush(0x22, 0xef, 0x44, 0x44);
+    private static readonly Brush NotCoveredBorder = CreateFrozenBrush(0x50, 0xef, 0x44, 0x44);
+    private static readonly Brush NotCoveredText = CreateFrozenBrush(0xff, 0xf8, 0x71, 0x71);
 
     private string _targetMethodName = "No method selected";
     private string _targetMethodFqn = string.Empty;
@@ -49,38 +42,41 @@ public sealed class TestLensViewModel : INotifyPropertyChanged
     private string _statusText = "Select a method in the code editor and right-click 'TestLens: Find Covering Tests...'";
     private bool _isCovered;
     private CoverageState _coverageState = CoverageState.Undetermined;
-    private bool _isLoading;
     private int _testsCount;
     private string _elapsedTimeText = string.Empty;
+
+    private bool _isSearching;
+    private bool _isRunningAllTests;
+    private bool _isRunningSingleTest;
 
     public string TargetMethodName
     {
         get => _targetMethodName;
-        set => SetField(ref _targetMethodName, value);
+        set => SetProperty(ref _targetMethodName, value);
     }
 
     public string TargetMethodFqn
     {
         get => _targetMethodFqn;
-        set => SetField(ref _targetMethodFqn, value);
+        set => SetProperty(ref _targetMethodFqn, value);
     }
 
     public string TargetLocation
     {
         get => _targetLocation;
-        set => SetField(ref _targetLocation, value);
+        set => SetProperty(ref _targetLocation, value);
     }
 
     public string StatusText
     {
         get => _statusText;
-        set => SetField(ref _statusText, value);
+        set => SetProperty(ref _statusText, value);
     }
 
     public bool IsCovered
     {
         get => _isCovered;
-        set => SetField(ref _isCovered, value);
+        set => SetProperty(ref _isCovered, value);
     }
 
     public CoverageState CoverageState
@@ -88,69 +84,109 @@ public sealed class TestLensViewModel : INotifyPropertyChanged
         get => _coverageState;
         set
         {
-            if (!SetField(ref _coverageState, value))
+            if (!SetProperty(ref _coverageState, value))
                 return;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusBadgeBackground)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusBadgeBorderBrush)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusTextColor)));
+
+            OnPropertyChanged(nameof(StatusBadgeBackground));
+            OnPropertyChanged(nameof(StatusBadgeBorderBrush));
+            OnPropertyChanged(nameof(StatusTextColor));
         }
     }
 
-    public System.Windows.Media.Brush StatusBadgeBackground => CoverageState switch
+    public Brush StatusBadgeBackground => CoverageState switch
     {
         CoverageState.Covered => CoveredBackground,
         CoverageState.NotCovered => NotCoveredBackground,
         _ => NeutralBackground
     };
 
-    public System.Windows.Media.Brush StatusBadgeBorderBrush => CoverageState switch
+    public Brush StatusBadgeBorderBrush => CoverageState switch
     {
         CoverageState.Covered => CoveredBorder,
         CoverageState.NotCovered => NotCoveredBorder,
         _ => NeutralBorder
     };
 
-    public System.Windows.Media.Brush StatusTextColor => CoverageState switch
+    public Brush StatusTextColor => CoverageState switch
     {
         CoverageState.Covered => CoveredText,
         CoverageState.NotCovered => NotCoveredText,
         _ => NeutralText
     };
 
-    public bool IsLoading
+    public bool IsSearching
     {
-        get => _isLoading;
+        get => _isSearching;
         set
         {
-            if (!SetField(ref _isLoading, value))
-                return;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RefreshButtonText)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RefreshButtonToolTip)));
+            if (SetProperty(ref _isSearching, value))
+                NotifyExecutionStateChanged();
         }
     }
 
-    public string RefreshButtonText => IsLoading ? "⏹ Stop" : "🔄 Refresh";
-    public string RefreshButtonToolTip => IsLoading ? "Stop search or test run" : "Refresh covering tests";
+    public bool IsRunningAllTests
+    {
+        get => _isRunningAllTests;
+        set
+        {
+            if (SetProperty(ref _isRunningAllTests, value))
+                NotifyExecutionStateChanged();
+        }
+    }
+
+    public bool IsRunningSingleTest
+    {
+        get => _isRunningSingleTest;
+        set
+        {
+            if (SetProperty(ref _isRunningSingleTest, value))
+                NotifyExecutionStateChanged();
+        }
+    }
+
+    public bool IsRunningTests => _isRunningAllTests || _isRunningSingleTest;
+    public bool IsLoading => _isSearching || IsRunningTests;
+    public bool IsRunAllEnabled => !_isSearching && (!_isRunningSingleTest || _isRunningAllTests);
+
+    public string RefreshButtonText => IsSearching ? "⏹ Stop" : "🔄 Refresh";
+    public string RefreshButtonToolTip => IsSearching ? "Stop covering test search" : "Refresh covering tests";
+
+    public string RunAllButtonText => IsRunningAllTests ? "⏹ Stop" : "▶ Run All";
+    public string RunAllButtonToolTip => IsRunningAllTests ? "Stop test execution" : "Run all covering tests";
 
     public int TestsCount
     {
         get => _testsCount;
-        set => SetField(ref _testsCount, value);
+        set => SetProperty(ref _testsCount, value);
     }
 
     public string ElapsedTimeText
     {
         get => _elapsedTimeText;
-        set => SetField(ref _elapsedTimeText, value);
+        set => SetProperty(ref _elapsedTimeText, value);
     }
 
-    public ObservableCollection<CoveringTestItemViewModel> Tests { get; } = new();
+    public ObservableCollection<CoveringTestItemViewModel> Tests { get; } = [];
+
+    public void ResetForSearch(string methodName, string methodFqn, string location)
+    {
+        Tests.Clear();
+        TestsCount = 0;
+        TargetMethodName = methodName;
+        TargetMethodFqn = methodFqn;
+        TargetLocation = location;
+        CoverageState = CoverageState.Undetermined;
+        IsSearching = true;
+        StatusText = "Searching covering tests across dependency graph...";
+    }
 
     public void AddOrUpdateDiscoveredMatch(CoveringTestMatch match)
     {
-        var existing = Tests.FirstOrDefault(t => string.Equals(t.FullyQualifiedName, match.TestMethod.FullyQualifiedName, StringComparison.OrdinalIgnoreCase));
+        var existing = Tests.FirstOrDefault(t =>
+            string.Equals(t.FullyQualifiedName, match.TestMethod.FullyQualifiedName, StringComparison.OrdinalIgnoreCase));
+
         if (existing == null)
-            Tests.Add(new CoveringTestItemViewModel(match));
+            Tests.Add(new CoveringTestItemViewModel(match, this));
         else
             existing.UpdateMatch(match);
 
@@ -176,28 +212,47 @@ public sealed class TestLensViewModel : INotifyPropertyChanged
 
         Tests.Clear();
         foreach (var match in result.CoveringTests)
-            Tests.Add(new CoveringTestItemViewModel(match));
+            Tests.Add(new CoveringTestItemViewModel(match, this));
     }
 
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    private void NotifyExecutionStateChanged()
     {
-        if (Equals(field, value))
-            return false;
+        OnPropertyChanged(nameof(IsRunningTests));
+        OnPropertyChanged(nameof(IsLoading));
+        OnPropertyChanged(nameof(IsRunAllEnabled));
+        OnPropertyChanged(nameof(RefreshButtonText));
+        OnPropertyChanged(nameof(RefreshButtonToolTip));
+        OnPropertyChanged(nameof(RunAllButtonText));
+        OnPropertyChanged(nameof(RunAllButtonToolTip));
 
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-        return true;
+        foreach (var test in Tests)
+            test.NotifyRunButtonState();
+    }
+
+    private static Brush CreateFrozenBrush(byte a, byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
+        brush.Freeze();
+        return brush;
     }
 }
 
-public sealed class CoveringTestItemViewModel(CoveringTestMatch match) : INotifyPropertyChanged
+public sealed class CoveringTestItemViewModel : ViewModelBase
 {
+    private readonly TestLensViewModel? _parent;
     private TestExecutionStatus _status = TestExecutionStatus.NotRun;
+    private bool _isRunningSelf;
     private string _executionMessage = string.Empty;
 
-    public CoveringTestMatch Match { get; private set; } = match;
+    public CoveringTestItemViewModel(CoveringTestMatch match, TestLensViewModel? parent = null)
+    {
+        Match = match;
+        _parent = parent;
+        foreach (var c in match.CallChains)
+            Chains.Add(new CallChainViewModel(c));
+    }
+
+    public CoveringTestMatch Match { get; private set; }
 
     public string DisplayName => Match.TestMethod.MethodName;
     public string FullyQualifiedName => Match.TestMethod.FullyQualifiedName;
@@ -208,6 +263,76 @@ public sealed class CoveringTestItemViewModel(CoveringTestMatch match) : INotify
     public string DepthText => Match.HasDirectCall
         ? "Direct Call (Depth 1)"
         : $"Indirect Call (Depth {Match.MinDepth})";
+
+    public bool IsRunningSelf
+    {
+        get => _isRunningSelf;
+        set
+        {
+            if (!SetProperty(ref _isRunningSelf, value))
+                return;
+
+            OnPropertyChanged(nameof(RunButtonText));
+            OnPropertyChanged(nameof(RunButtonToolTip));
+            OnPropertyChanged(nameof(IsRunButtonEnabled));
+        }
+    }
+
+    public bool IsRunButtonEnabled => IsRunningSelf || !(_parent?.IsLoading ?? false);
+
+    public string RunButtonText => IsRunningSelf ? "⏹ Stop" : "▶ Run";
+    public string RunButtonToolTip => IsRunningSelf
+        ? "Stop this test"
+        : (_parent?.IsLoading ?? false ? "Execution or search in progress" : "Run this test");
+
+    public TestExecutionStatus Status
+    {
+        get => _status;
+        set
+        {
+            if (!SetProperty(ref _status, value))
+                return;
+
+            OnPropertyChanged(nameof(StatusIcon));
+            OnPropertyChanged(nameof(StatusColor));
+            OnPropertyChanged(nameof(StatusBadgeText));
+        }
+    }
+
+    public string ExecutionMessage
+    {
+        get => _executionMessage;
+        set => SetProperty(ref _executionMessage, value);
+    }
+
+    public string StatusIcon => Status switch
+    {
+        TestExecutionStatus.Running => "⏳",
+        TestExecutionStatus.Passed => "✔️",
+        TestExecutionStatus.Failed => "❌",
+        TestExecutionStatus.Skipped => "⚠",
+        _ => "🧪"
+    };
+
+    public string StatusColor => Status switch
+    {
+        TestExecutionStatus.Passed => "#16a34a",
+        TestExecutionStatus.Failed => "#dc2626",
+        TestExecutionStatus.Skipped => "#eab308",
+        TestExecutionStatus.Running => "#2563eb",
+        _ => "#94a3b8"
+    };
+
+    public string StatusBadgeText => Status switch
+    {
+        TestExecutionStatus.Running => "Running...",
+        TestExecutionStatus.Passed => "Passed",
+        TestExecutionStatus.Failed => "Failed",
+        TestExecutionStatus.Skipped => "Skipped",
+        _ => string.Empty
+    };
+
+    public ObservableCollection<CallChainViewModel> Chains { get; } = [];
 
     public void UpdateMatch(CoveringTestMatch updatedMatch)
     {
@@ -222,64 +347,11 @@ public sealed class CoveringTestItemViewModel(CoveringTestMatch match) : INotify
         OnPropertyChanged(nameof(DepthText));
     }
 
-    public TestExecutionStatus Status
+    public void NotifyRunButtonState()
     {
-        get => _status;
-        set
-        {
-            if (_status == value)
-                return;
-            _status = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(StatusIcon));
-            OnPropertyChanged(nameof(StatusColor));
-            OnPropertyChanged(nameof(StatusBadgeText));
-        }
+        OnPropertyChanged(nameof(IsRunButtonEnabled));
+        OnPropertyChanged(nameof(RunButtonToolTip));
     }
-
-    public string ExecutionMessage
-    {
-        get => _executionMessage;
-        set
-        {
-            if (_executionMessage == value)
-                return;
-            _executionMessage = value;
-            OnPropertyChanged();
-        }
-    }
-
-    public string StatusIcon => Status switch
-    {
-        TestExecutionStatus.Running => "⏳",
-        TestExecutionStatus.Passed => "✔",
-        TestExecutionStatus.Failed => "❌",
-        _ => "🧪"
-    };
-
-    public string StatusColor => Status switch
-    {
-        TestExecutionStatus.Passed => "#16a34a",
-        TestExecutionStatus.Failed => "#dc2626",
-        TestExecutionStatus.Running => "#2563eb",
-        _ => "#94a3b8"
-    };
-
-    public string StatusBadgeText => Status switch
-    {
-        TestExecutionStatus.Running => "Running...",
-        TestExecutionStatus.Passed => "Passed",
-        TestExecutionStatus.Failed => "Failed",
-        _ => string.Empty
-    };
-
-    public ObservableCollection<CallChainViewModel> Chains { get; } =
-        new(match.CallChains.Select(c => new CallChainViewModel(c)));
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    private void OnPropertyChanged([CallerMemberName] string? name = null) =>
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 public sealed class CallChainViewModel(CallChain chain)

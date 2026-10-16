@@ -1,5 +1,6 @@
-using TestLens.Core.Models;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using TestLens.Core.Models;
 
 namespace TestLens.Core.Detection.Detectors;
 
@@ -62,12 +63,14 @@ public sealed class XUnitTestDetector : ITestFrameworkDetector
         foreach (var namedArg in attribute.NamedArguments)
         {
             if (string.Equals(namedArg.Key, "DisplayName", StringComparison.OrdinalIgnoreCase) &&
-                namedArg.Value.Value is string strVal)
-                return strVal;
+                namedArg.Value.Value is string stringValue)
+            {
+                return stringValue;
+            }
         }
 
         // 2. Синтаксический fallback
-        if (attribute.ApplicationSyntaxReference?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.AttributeSyntax attrSyntax &&
+        if (attribute.ApplicationSyntaxReference?.GetSyntax() is AttributeSyntax attrSyntax &&
             attrSyntax.ArgumentList != null)
         {
             foreach (var arg in attrSyntax.ArgumentList.Arguments)
@@ -75,8 +78,8 @@ public sealed class XUnitTestDetector : ITestFrameworkDetector
                 if (arg.NameEquals != null &&
                     string.Equals(arg.NameEquals.Name.Identifier.Text, "DisplayName", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (arg.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax lit)
-                        return lit.Token.ValueText;
+                    if (arg.Expression is LiteralExpressionSyntax literalExpressionSyntax)
+                        return literalExpressionSyntax.Token.ValueText;
                 }
             }
         }
