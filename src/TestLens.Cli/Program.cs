@@ -28,7 +28,7 @@ internal static class Program
         var solutionPath = GetArgument(args, "--solution", "-s");
         var methodName = GetArgument(args, "--method", "-m");
         var fileName = GetArgument(args, "--file", "-f");
-        var depth = int.TryParse(GetArgument(args, "--depth", "-d"), out var d) ? d : 5;
+        var depth = int.TryParse(GetArgument(args, "--depth", "-d"), out var d) ? d : 10;
         var run = args.Contains("--run") || args.Contains("-r");
         var json = args.Contains("--json");
 
@@ -66,7 +66,7 @@ Options:
   -s, --solution <path>   Path to the solution file (.sln) [required]
   -m, --method <name>     Name of the target method [required]
   -f, --file <name>       Source file name filter (for method overloads)
-  -d, --depth <int>       Maximum call chain depth (default: 5)
+  -d, --depth <int>       Maximum call chain depth (default: 10)
   -r, --run               Automatically run discovered covering tests
   --json                  Output in JSON format
   -h, --help              Show help information

@@ -30,9 +30,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.527" />
+    <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.10.2185" GeneratePathProperty="true" PrivateAssets="all" />
     <PackageReference Include="Microsoft.VisualStudio.LanguageServices" Version="4.10.0" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
@@ -46,5 +47,7 @@
 
 
   <Target Name="GenerateTemplatesManifest" />
+
+  <Target Name="CreateVsixAfterBuild" AfterTargets="Build" Condition="'$(CreateVsixContainer)' == 'true'" DependsOnTargets="GeneratePkgDef;CopyPkgDef;CreateVsixContainer" />
 
 </Project>

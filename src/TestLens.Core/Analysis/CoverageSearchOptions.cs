@@ -7,9 +7,9 @@ public sealed record CoverageSearchOptions
 {
     /// <summary>
     /// Максимальная глубина цепочки вызовов при обратном обходе.
-    /// По умолчанию 5.
+    /// По умолчанию 10.
     /// </summary>
-    public int MaxCallDepth { get; init; } = 5;
+    public int MaxCallDepth { get; init; } = 10;
 
     /// <summary>
     /// Максимальное количество исследуемых методов в графе (для предотвращения зависаний в гигантских решениях).

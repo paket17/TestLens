@@ -15,10 +15,12 @@ public static class TestLensServices
     /// </summary>
     public static ICoveringTestFinder CreateFinder(
         ICallerResolver? callerResolver = null,
-        ITestDetector? testDetector = null) =>
-        new RoslynInvertedCallGraphWalker(
+        ITestDetector? testDetector = null)
+    {
+        return new RoslynInvertedCallGraphWalker(
             callerResolver ?? CreateCallerResolver(),
             testDetector ?? CreateTestDetector());
+    }
 
     /// <summary>
     /// Создает резолвер вызывающих методов Roslyn.

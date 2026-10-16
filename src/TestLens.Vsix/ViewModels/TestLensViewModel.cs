@@ -24,8 +24,8 @@ public enum CoverageState
 
 public sealed class TestLensViewModel : ViewModelBase
 {
-    private static readonly Brush NeutralBackground = CreateFrozenBrush(0x2a, 0x38, 0x82, 0xf6);
-    private static readonly Brush NeutralBorder = CreateFrozenBrush(0x55, 0x38, 0x82, 0xf6);
+    private static readonly Brush NeutralBackground = CreateFrozenBrush(0x38, 0x38, 0x82, 0xf6);
+    private static readonly Brush NeutralBorder = CreateFrozenBrush(0x75, 0x38, 0x82, 0xf6);
     private static readonly Brush NeutralText = CreateFrozenBrush(0xff, 0x93, 0xc5, 0xfd);
 
     private static readonly Brush CoveredBackground = CreateFrozenBrush(0x22, 0x22, 0xc5, 0x5e);
@@ -39,7 +39,7 @@ public sealed class TestLensViewModel : ViewModelBase
     private string _targetMethodName = "No method selected";
     private string _targetMethodFqn = string.Empty;
     private string _targetLocation = string.Empty;
-    private string _statusText = "Select a method in the code editor and right-click 'TestLens: Find Covering Tests...'";
+    private string _statusText = "Place caret on a method and click '🔄 Refresh' or right-click 'TestLens: Find Covering Tests...'";
     private bool _isCovered;
     private CoverageState _coverageState = CoverageState.Undetermined;
     private int _testsCount;
@@ -48,6 +48,17 @@ public sealed class TestLensViewModel : ViewModelBase
     private bool _isSearching;
     private bool _isRunningAllTests;
     private bool _isRunningSingleTest;
+    private int _searchDepth = 10;
+
+    public int SearchDepth
+    {
+        get => _searchDepth;
+        set
+        {
+            var normalized = value <= 0 ? 10 : Math.Min(50, value);
+            SetProperty(ref _searchDepth, normalized);
+        }
+    }
 
     public string TargetMethodName
     {
@@ -90,8 +101,11 @@ public sealed class TestLensViewModel : ViewModelBase
             OnPropertyChanged(nameof(StatusBadgeBackground));
             OnPropertyChanged(nameof(StatusBadgeBorderBrush));
             OnPropertyChanged(nameof(StatusTextColor));
+            OnPropertyChanged(nameof(IsEmptyNotCovered));
         }
     }
+
+    public bool IsEmptyNotCovered => CoverageState == CoverageState.NotCovered && Tests.Count == 0 && !IsLoading;
 
     public Brush StatusBadgeBackground => CoverageState switch
     {
@@ -178,6 +192,7 @@ public sealed class TestLensViewModel : ViewModelBase
         CoverageState = CoverageState.Undetermined;
         IsSearching = true;
         StatusText = "Searching covering tests across dependency graph...";
+        OnPropertyChanged(nameof(IsEmptyNotCovered));
     }
 
     public void AddOrUpdateDiscoveredMatch(CoveringTestMatch match)
@@ -194,6 +209,8 @@ public sealed class TestLensViewModel : ViewModelBase
         IsCovered = Tests.Count > 0;
         if (IsCovered)
             CoverageState = CoverageState.Covered;
+
+        OnPropertyChanged(nameof(IsEmptyNotCovered));
     }
 
     public void UpdateFromResult(MethodCoverageResult result)
@@ -208,11 +225,13 @@ public sealed class TestLensViewModel : ViewModelBase
 
         StatusText = result.IsCovered
             ? $"Covered ({result.TotalCoveringTestsCount} {(result.TotalCoveringTestsCount == 1 ? "test" : "tests")})"
-            : "Not covered by tests (0 calls found)";
+            : "Not covered (0 calls found). Try increasing search depth.";
 
         Tests.Clear();
         foreach (var match in result.CoveringTests)
             Tests.Add(new CoveringTestItemViewModel(match, this));
+
+        OnPropertyChanged(nameof(IsEmptyNotCovered));
     }
 
     private void NotifyExecutionStateChanged()
@@ -224,6 +243,7 @@ public sealed class TestLensViewModel : ViewModelBase
         OnPropertyChanged(nameof(RefreshButtonToolTip));
         OnPropertyChanged(nameof(RunAllButtonText));
         OnPropertyChanged(nameof(RunAllButtonToolTip));
+        OnPropertyChanged(nameof(IsEmptyNotCovered));
 
         foreach (var test in Tests)
             test.NotifyRunButtonState();

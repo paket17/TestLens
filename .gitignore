@@ -10,6 +10,3 @@
 *.sln.docstates
 TestResults/
 *.vsix
-!src/TestLens.Vsix/
-!src/TestLens.Vsix/bin/Debug/net48/TestLens.vsix
-!src/TestLens.Vsix/TestLens.vsix

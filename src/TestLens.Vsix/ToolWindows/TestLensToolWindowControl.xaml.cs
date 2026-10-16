@@ -290,8 +290,48 @@ public partial class TestLensToolWindowControl : UserControl
             _ = OpenDocumentAtLineAsync(item.Match.TestMethod.FilePath, item.Match.TestMethod.LineNumber);
     }
 
+    private void TbDepth_PreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        e.Handled = !int.TryParse(e.Text, out _);
+    }
+
+    private void TbDepth_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Enter or Key.Return)
+        {
+            TbDepth.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        }
+    }
+
+    private void DepthStepper_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Delta > 0)
+            ViewModel.SearchDepth = Math.Min(50, ViewModel.SearchDepth + 1);
+        else if (e.Delta < 0)
+            ViewModel.SearchDepth = Math.Max(1, ViewModel.SearchDepth - 1);
+
+        TbDepth.GetBindingExpression(TextBox.TextProperty)?.UpdateTarget();
+        e.Handled = true;
+    }
+
+    private void BtnDepthUp_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SearchDepth = Math.Min(50, ViewModel.SearchDepth + 1);
+        TbDepth.GetBindingExpression(TextBox.TextProperty)?.UpdateTarget();
+    }
+
+    private void BtnDepthDown_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SearchDepth = Math.Max(1, ViewModel.SearchDepth - 1);
+        TbDepth.GetBindingExpression(TextBox.TextProperty)?.UpdateTarget();
+    }
+
     private void BtnRefresh_Click(object sender, RoutedEventArgs e)
     {
+        TbDepth.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+
         if (ViewModel.IsSearching)
         {
             FindCoveringTestsCommand.CancelActiveSearch();
@@ -312,7 +352,7 @@ public partial class TestLensToolWindowControl : UserControl
     private async Task RefreshTestsAsync()
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-        await FindCoveringTestsCommand.StartSearchAsync(refreshCurrentTarget: true);
+        await FindCoveringTestsCommand.StartSearchAsync();
     }
 
     private void TreeView_MouseDoubleClick(object sender, MouseButtonEventArgs e)

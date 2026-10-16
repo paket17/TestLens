@@ -24,9 +24,6 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
     private static CancellationTokenSource? _activeSearchCts;
     private static Task? _activeSearchTask;
     private static int _activeSearchId;
-    private static DocumentId? _lastDocumentId;
-    private static int _lastMethodPosition = -1;
-    private static string? _lastMethodName;
 
     protected override async Task ExecuteAsync(OleMenuCmdEventArgs e) =>
         await StartSearchAsync();
@@ -34,24 +31,34 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
     public static void CancelActiveSearch() =>
         _activeSearchCts?.Cancel();
 
-    public static async Task StartSearchAsync(bool refreshCurrentTarget = false)
+    public static async Task StartSearchAsync()
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
 
         await EnsurePreviousSearchCompletedAsync();
         var searchId = Interlocked.Increment(ref _activeSearchId);
 
-        var workspace = await ResolveWorkspaceAsync();
-        if (workspace == null)
-            return;
-
-        var target = await ResolveTargetMethodAsync(workspace, refreshCurrentTarget);
-        if (target == null)
-            return;
-
         var control = await ShowToolWindowControlAsync();
         if (control == null)
             return;
+
+        var workspace = await ResolveWorkspaceAsync();
+        if (workspace == null)
+        {
+            control.ViewModel.CoverageState = CoverageState.Undetermined;
+            control.ViewModel.IsSearching = false;
+            control.ViewModel.StatusText = "Failed to connect to Visual Studio workspace.";
+            return;
+        }
+
+        var (target, statusMessage) = await ResolveTargetMethodAsync(workspace);
+        if (target == null)
+        {
+            control.ViewModel.CoverageState = CoverageState.Undetermined;
+            control.ViewModel.IsSearching = false;
+            control.ViewModel.StatusText = statusMessage ?? "Place caret on a method and click '🔄 Refresh' to find covering tests.";
+            return;
+        }
 
         var targetLine = target.MethodDecl.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
         control.ViewModel.ResetForSearch(
@@ -106,11 +113,7 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
     private static async Task<VisualStudioWorkspace?> ResolveWorkspaceAsync()
     {
         var componentModel = await VS.GetServiceAsync<SComponentModel, IComponentModel>();
-        var workspace = componentModel?.GetService<VisualStudioWorkspace>();
-        if (workspace == null)
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Failed to connect to VisualStudioWorkspace.");
-
-        return workspace;
+        return componentModel?.GetService<VisualStudioWorkspace>();
     }
 
     private static async Task<TestLensToolWindowControl?> ShowToolWindowControlAsync()
@@ -133,7 +136,7 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
             var finder = TestLensServices.CreateFinder();
             var options = new CoverageSearchOptions
             {
-                MaxCallDepth = 5,
+                MaxCallDepth = viewModel.SearchDepth > 0 ? viewModel.SearchDepth : 10,
                 MaxExploredMethods = 300,
                 MaxCallersPerMethod = 50,
                 FollowInterfaces = true,
@@ -174,19 +177,13 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
                 return;
 
             viewModel.IsSearching = false;
+            viewModel.CoverageState = CoverageState.Undetermined;
             viewModel.StatusText = $"Error during search: {ex.Message}";
         }
     }
 
-    private static async Task<TargetMethodContext?> ResolveTargetMethodAsync(VisualStudioWorkspace workspace, bool refreshCurrentTarget)
+    private static async Task<(TargetMethodContext? Target, string? StatusMessage)> ResolveTargetMethodAsync(VisualStudioWorkspace workspace)
     {
-        if (refreshCurrentTarget && _lastDocumentId != null && workspace.CurrentSolution.ContainsDocument(_lastDocumentId))
-        {
-            var targetFromLast = await ResolveFromLastTargetAsync(workspace);
-            if (targetFromLast != null)
-                return targetFromLast;
-        }
-
         var docView = await VS.Documents.GetActiveDocumentViewAsync();
         var caretPosition = docView?.TextView?.Caret.Position.BufferPosition.Position ?? -1;
         var filePath = docView?.FilePath;
@@ -199,96 +196,36 @@ internal sealed class FindCoveringTestsCommand : BaseCommand<FindCoveringTestsCo
                 document = workspace.CurrentSolution.GetDocument(documentId);
         }
 
-        if (document == null && _lastDocumentId != null && workspace.CurrentSolution.ContainsDocument(_lastDocumentId))
-        {
-            var targetFromLast = await ResolveFromLastTargetAsync(workspace);
-            if (targetFromLast != null)
-                return targetFromLast;
-        }
-
         if (document == null)
-        {
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Please open a C# file containing a method or select a method first.");
-            return null;
-        }
+            return (null, "Please open a C# file containing a method or select a method first.");
+
+        if (caretPosition < 0)
+            return (null, "Place caret on a method and click '🔄 Refresh' to find covering tests.");
 
         var syntaxRoot = await document.GetSyntaxRootAsync();
         var semanticModel = await document.GetSemanticModelAsync();
         if (syntaxRoot == null || semanticModel == null)
-            return null;
+            return (null, "Failed to load syntax or semantic model for the document.");
 
         var methodDecl = FindMethodDeclaration(syntaxRoot, caretPosition);
-
-        // Fallback to last method position in document if caret wasn't inside a method
-        if (methodDecl == null && _lastDocumentId == document.Id)
-            methodDecl = FindMethodDeclaration(syntaxRoot, _lastMethodPosition, _lastMethodName);
-
         if (methodDecl == null)
-        {
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Place the caret inside a method declaration or body to find covering tests.");
-            return null;
-        }
+            return (null, "Place caret on a method and click '🔄 Refresh' to find covering tests.");
 
         if (semanticModel.GetDeclaredSymbol(methodDecl) is not IMethodSymbol methodSymbol)
-        {
-            await VS.MessageBox.ShowWarningAsync("TestLens", "Failed to resolve method symbol.");
-            return null;
-        }
+            return (null, "Failed to resolve method symbol at caret.");
 
-        RememberTarget(document.Id, methodDecl.SpanStart, methodSymbol.Name);
-        return new TargetMethodContext(document, methodDecl, methodSymbol);
+        return (new TargetMethodContext(document, methodDecl, methodSymbol), null);
     }
 
-    private static async Task<TargetMethodContext?> ResolveFromLastTargetAsync(VisualStudioWorkspace workspace)
-    {
-        if (_lastDocumentId == null || !workspace.CurrentSolution.ContainsDocument(_lastDocumentId))
-            return null;
-
-        var document = workspace.CurrentSolution.GetDocument(_lastDocumentId);
-        if (document == null)
-            return null;
-
-        var syntaxRoot = await document.GetSyntaxRootAsync();
-        var semanticModel = await document.GetSemanticModelAsync();
-        if (syntaxRoot == null || semanticModel == null)
-            return null;
-
-        var methodDecl = FindMethodDeclaration(syntaxRoot, _lastMethodPosition, _lastMethodName);
-        if (methodDecl == null)
-            return null;
-
-        if (semanticModel.GetDeclaredSymbol(methodDecl) is not IMethodSymbol methodSymbol)
-            return null;
-
-        RememberTarget(document.Id, methodDecl.SpanStart, methodSymbol.Name);
-        return new TargetMethodContext(document, methodDecl, methodSymbol);
-    }
-
-    private static MethodDeclarationSyntax? FindMethodDeclaration(SyntaxNode syntaxRoot, int position, string? preferredName = null)
+    private static MethodDeclarationSyntax? FindMethodDeclaration(SyntaxNode syntaxRoot, int position)
     {
         if (position >= 0 && position < syntaxRoot.FullSpan.Length)
         {
             var token = syntaxRoot.FindToken(position);
-            var methodDecl = token.Parent?.FirstAncestorOrSelf<MethodDeclarationSyntax>();
-            if (methodDecl != null && (preferredName == null || methodDecl.Identifier.Text == preferredName))
-                return methodDecl;
-        }
-
-        if (!string.IsNullOrEmpty(preferredName))
-        {
-            return syntaxRoot.DescendantNodes()
-                .OfType<MethodDeclarationSyntax>()
-                .FirstOrDefault(m => m.Identifier.Text == preferredName);
+            return token.Parent?.FirstAncestorOrSelf<MethodDeclarationSyntax>();
         }
 
         return null;
-    }
-
-    private static void RememberTarget(DocumentId documentId, int position, string methodName)
-    {
-        _lastDocumentId = documentId;
-        _lastMethodPosition = position;
-        _lastMethodName = methodName;
     }
 
     private static void ApplySearchStoppedStatus(TestLensViewModel viewModel, int count, double? elapsedSeconds = null)

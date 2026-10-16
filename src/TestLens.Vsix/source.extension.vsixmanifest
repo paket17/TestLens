@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="TestLens.Vsix.b1a03f8a-9e12-4d2a-bc93-a4c4e7829a21" Version="1.0.11" Language="en-US" Publisher="Developer" />
+    <Identity Id="TestLens.Vsix.b1a03f8a-9e12-4d2a-bc93-a4c4e7829a21" Version="1.0.17" Language="en-US" Publisher="Developer" />
     <DisplayName>TestLens</DisplayName>
     <Description xml:space="preserve">Find automated tests covering any selected .NET method with Roslyn call graph visualization and test runner.</Description>
     <MoreInfo>https://github.com/developer/TestLens</MoreInfo>

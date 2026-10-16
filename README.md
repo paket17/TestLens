@@ -16,26 +16,22 @@
   - **xUnit** (`[Fact]`, `[Theory]`)
   - **NUnit** (`[Test]`, `[TestCase]`, `[TestCaseSource]`)
   - **MSTest** (`[TestMethod]`, `[DataTestMethod]`)
-  - Поддержка `DisplayName` атрибутов и легкая расширяемость через паттерн детекторов.
+  - Поддержка атрибутов `DisplayName` и расширяемость через паттерн детекторов.
 - **Visual Studio 2022 / 2026 Extension (VSIX):**
   - Пункт в контекстном меню редактора C# кода: `TestLens: Find Covering Tests...`.
   - Отдельное окно инструментов (**Tool Window**):
-    - Статусный бейдж: **COVERED** (зеленый), **NOT COVERED** (красный), нейтральный **SEARCHING...** во время анализа.
-    - **Live-поток обнаружения тестов:** найденные тесты отображаются в списке моментально по мере обхода графа вызовов, не дожидаясь завершения всего анализа.
-    - **Остановка поиска:** во время сканирования кнопка **Refresh** превращается в кнопку **Stop** — можно остановить поиск в любой момент с полным сохранением уже найденных результатов.
+    - Статусный бейдж: **COVERED** (зеленый), **NOT COVERED** (красный), нейтральный во время поиска.
+    - Кнопка **🔄 Refresh (Обновить)**: повторный запуск анализа текущего метода (например, после изменения кода). Во время поиска кнопка превращается в **⏹ Stop** с сохранением уже найденных результатов.
+    - Кнопки **▶ Запуск** для каждого отдельного теста и **▶ Запустить все** с выводом прогресса в Visual Studio Output Window (во время запуска теста кнопка превращается в **⏹ Stop**).
     - Дерево иерархии вызовов со сниппетами строк кода и номерами строк.
-    - Удобная навигация: двойной клик по шагу или тесту мгновенно открывает файл на нужной строке в редакторе.
-    - Контекстное меню (ПКМ): быстрое копирование имени теста, полного имени (FQN), пути к файлу и шага вызова.
-    - Горизонтальная прокрутка дерева через `Shift + MouseWheel`.
-    - Кнопки **▶ Запуск** для каждого отдельного теста и **▶ Запустить все** с выводом прогресса в Visual Studio Output Window.
 - **CLI Утилита (TestLens.Cli):**
   - Автономный запуск в терминале или CI/CD.
   - Цветной вывод дерева вызовов.
   - Флаг `--json` для программной интеграции (например, расширения для **VS Code**).
   - Флаг `--run` для немедленного выполнения найденных тестов через `dotnet test`.
-- **Архитектура (SOLID / DRY / Clean Architecture):**
-  - Ядро `TestLens.Core` независимо от среды IDE (`netstandard2.0`, `net8.0`, `net10.0`).
-  - Легковесный встроенный IoC/DI контейнер (`CoreServiceCollection`, `CoreServiceProvider`), совместимый с `Microsoft.Extensions.DependencyInjection`.
+- **Архитектура (Pure DI / Clean Architecture):**
+  - Ядро `TestLens.Core` независимо от среды IDE (`netstandard2.0`, `net10.0`).
+  - Быстрый и прозрачный **Pure DI** (`TestLensServices`): статические фабрики с возможностью внедрения моков/кастомных реализаций без тяжелых IoC-контейнеров и рефлексии.
 
 ---
 
@@ -44,15 +40,15 @@
 ```
 TestLens/
 ├── src/
-│   ├── TestLens.Core/                  # Библиотека анализа и поиска тестов (netstandard2.0, net8.0, net10.0)
+│   ├── TestLens.Core/                  # Библиотека анализа и поиска тестов (netstandard2.0, net10.0)
 │   │   ├── Analysis/                   # Обходчик графа вызовов (RoslynInvertedCallGraphWalker, CallerResolver)
+│   │   ├── Compatibility/              # Полифилы совместимости для netstandard2.0 (WaitForExitAsync)
 │   │   ├── Detection/                  # Детекторы тестов (xUnit, NUnit, MSTest, Composite)
 │   │   ├── Execution/                  # Раннер тестов (DotNetCliTestRunner)
-│   │   ├── IoC/                        # Легковесный DI-контейнер
 │   │   ├── Models/                     # Модели данных (MethodCoverageResult, CallChain, CoveringTestMatch)
-│   │   └── Extensions/                 # Методы расширения ServiceCollection
+│   │   └── TestLensServices.cs         # Pure DI фабрика создания сервисов
 │   │
-│   ├── TestLens.Cli/                   # Консольное приложение для поиска и запуска тестов
+│   ├── TestLens.Cli/                   # Консольное приложение для поиска и запуска тестов (net10.0)
 │   │   └── Program.cs                  # Загрузка MSBuildWorkspace, CLI интерфейс, вывод JSON
 │   │
 │   └── TestLens.Vsix/                  # Расширение для Visual Studio 2022 / 2026 (.NET Framework 4.8)
@@ -85,11 +81,12 @@ dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m CreateWorkspaceFromS
 
 #### 2. Метод, не покрытый тестами:
 ```bash
-dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m FindCoveringTestsAsync
+dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m PrintBanner
 ```
 > **Результат:**
 > ```
-> Target method: TestLens.Core.Analysis.ICoveringTestFinder.FindCoveringTestsAsync
+> Target method: TestLens.Cli.Program.PrintBanner
+> File: D:\Repos\TestLens\src\TestLens.Cli\Program.cs:158
 > Coverage status: NOT COVERED BY TESTS (0 calls from tests found)
 > ```
 
@@ -107,28 +104,46 @@ dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m CreateWorkspaceFromS
 
 ---
 
-## 💻 Установка и использование в Visual Studio
+## 💻 Сборка, установка и использование расширения для Visual Studio
 
-### Установка расширения:
-1. Соберите решение или возьмите готовый файл пакета:
-   - `src/TestLens.Vsix/TestLens.vsix` или `src/TestLens.Vsix/bin/Debug/net48/TestLens.vsix`
-2. Закройте Visual Studio и дважды кликните по `.vsix` файлу для установки.
-3. Откройте проект в Visual Studio 2022 или Visual Studio 2026.
+### 📦 Необходимые компоненты для сборки (Prerequisites)
+Для сборки VSIX-проекта требуются компоненты Visual Studio (2022 или 2026):
+- Рабочая нагрузка **«Разработка расширений Visual Studio»** (*Visual Studio extension development*).
+- Пакет целевой платформы **.NET Framework 4.8 Targeting Pack / Developer Pack**.
 
-### Использование в коде:
-1. Откройте любой C# файл и поставьте курсор внутри сигнатуры или тела метода.
-2. Нажмите правой кнопкой мыши и выберите **"TestLens: Find Covering Tests..."** (или вызовите окно через меню `Вид -> Другие окна -> TestLens Window`).
+---
+
+### 🔨 Как собрать VSIX-расширение
+
+Версия расширения указывается в файле `source.extension.vsixmanifest`
+
+Файл `.vsix` упаковывается автоматически при обычной сборке проекта
+
+---
+
+### 📥 Установка собранного расширения
+1. Обязательно **закройте все открытые окна Visual Studio**.
+2. В Проводнике дважды кликните по сгенерированному файлу `src/TestLens.Vsix/TestLens.vsix`.
+3. В окне **VSIX Installer** подтвердите установку в нужные версии Visual Studio (2022/2026), нажав кнопку **Install** (или **Modify**).
+4. Запустите Visual Studio.
+
+---
+
+### 🎯 Использование расширения в редакторе кода:
+1. Откройте любой C# файл и установите курсор на сигнатуру или внутри тела метода.
+2. Нажмите правой кнопкой мыши и выберите **"TestLens: Find Covering Tests..."** (также панель можно открыть через меню `Вид ➔ Другие окна ➔ TestLens Window`).  
+   *(Если курсор установлен вне метода, всплывающие окна не блокируют работу — в статусной строке панели отобразится подсказка: `Place the caret inside a method declaration...`).*
 3. В открывшейся панели отобразится:
-   - Статус: покрыт или не покрыт (с нейтральным фоном во время поиска).
-   - Список тестов с их фреймворками (xUnit, NUnit, MSTest), обновляемый в реальном времени.
-   - Дерево вызовов от теста до целевого метода со сниппетами кода.
-   - Кнопка **Stop** для возможности остановить анализ в любой момент.
-   - Кнопки для перехода к строкам кода и запуска тестов.
+   - Статус покрытия: **COVERED** (зеленый) или **NOT COVERED** (красный).
+   - Список тестов (xUnit, NUnit, MSTest), обновляемый в реальном времени во время анализа.
+   - Дерево вызовов от тестового метода до целевого метода со сниппетами строк кода.
+   - Кнопка **🔄 Refresh**: повторный запуск поиска тестов для текущего метода (во время поиска превращается в **⏹ Stop** для прерывания).
+   - Кнопки запуска тестов (**▶ Запуск** для одного теста / **▶ Запустить все**), которые во время выполнения также превращаются в **⏹ Stop** для остановки.
 
 ---
 
 ## 🧪 Запуск модульных тестов
 
 ```bash
-dotnet test tests/TestLens.Core.Tests/TestLens.Core.Tests.csproj
+dotnet test TestLens.sln
 ```
