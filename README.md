@@ -4,6 +4,8 @@
 
 A static analysis tool powered by **.NET Roslyn** for discovering and running automated tests that cover a specific C# method — featuring full support for indirect call chains of arbitrary depth, interface dispatch, polymorphic overrides, and various test frameworks.
 
+<img width="1576" height="411" alt="testlens" src="https://github.com/user-attachments/assets/f2d15a0a-3eb6-4c49-963a-4313a786c59d" />
+
 ---
 
 ## 📌 Features
