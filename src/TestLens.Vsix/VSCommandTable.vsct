@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <Extern href="stdidcmd.h"/>
+  <Extern href="vsshlids.h"/>
+
+  <Commands package="guidTestLensPackage">
+    <Groups>
+      <Group guid="guidTestLensPackageCmdSet" id="MyMenuGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_CTXT_CODEWIN"/>
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <Button guid="guidTestLensPackageCmdSet" id="cmdidFindCoveringTests" priority="0x0100" type="Button">
+        <Parent guid="guidTestLensPackageCmdSet" id="MyMenuGroup"/>
+        <Strings>
+          <ButtonText>TestLens: Find Covering Tests...</ButtonText>
+          <ToolTipText>Найти автоматизированные тесты, покрывающие этот метод</ToolTipText>
+        </Strings>
+      </Button>
+      <Button guid="guidTestLensPackageCmdSet" id="cmdidOpenToolWindow" priority="0x0101" type="Button">
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_WNDO_OTRWNDWS1"/>
+        <Strings>
+          <ButtonText>TestLens Window</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <Symbols>
+    <GuidSymbol name="guidTestLensPackage" value="{e9a2b534-192a-43cf-8a21-995a9ef02b11}" />
+
+    <GuidSymbol name="guidTestLensPackageCmdSet" value="{f1b3c456-2a3b-4c5d-6e7f-8a9b0c1d2e3f}">
+      <IDSymbol name="MyMenuGroup" value="0x1020" />
+      <IDSymbol name="cmdidFindCoveringTests" value="0x0100" />
+      <IDSymbol name="cmdidOpenToolWindow" value="0x0101" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>

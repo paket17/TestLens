@@ -1,0 +1,289 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Collections.Immutable;
+using TestLens.Core.Compatibility;
+using TestLens.Core.Models;
+
+namespace TestLens.Core.Analysis;
+
+/// <summary>
+/// Реализация резолвера вызывающих методов с учетом полиморфизма Roslyn.
+/// </summary>
+public sealed class CallerResolver(
+    ILogger<CallerResolver>? logger = null) : ICallerResolver
+{
+    private readonly ConcurrentDictionary<ISymbol, IReadOnlyList<DiscoveredCaller>> _cache =
+        new(SymbolEqualityComparer.Default);
+
+    public async Task<IReadOnlyList<DiscoveredCaller>> FindCallersAsync(
+        Solution solution,
+        IMethodSymbol targetMethod,
+        CoverageSearchOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        CompatExtensions.ThrowIfNull(solution, nameof(solution));
+        CompatExtensions.ThrowIfNull(targetMethod, nameof(targetMethod));
+        CompatExtensions.ThrowIfNull(options, nameof(options));
+
+        if (_cache.TryGetValue(targetMethod, out var cached))
+            return cached;
+
+        var results = new List<DiscoveredCaller>();
+        var seenCallKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Direct callers of the method
+        await CollectCallersForSymbolAsync(
+            solution,
+            targetMethod,
+            targetMethod,
+            CallChainStepKind.DirectCall,
+            results,
+            seenCallKeys,
+            options,
+            cancellationToken);
+
+        // 2. Interface calls if method implements interfaces (excluding standard System interfaces)
+        if (options.FollowInterfaces && results.Count < options.MaxCallersPerMethod)
+        {
+            foreach (var interfaceMethod in GetImplementedInterfaceMethods(targetMethod))
+            {
+                if (results.Count >= options.MaxCallersPerMethod)
+                    break;
+
+                if (IsSymbolInSystemNameSpace(interfaceMethod))
+                    continue;
+
+                await CollectCallersForSymbolAsync(
+                    solution,
+                    interfaceMethod,
+                    targetMethod,
+                    CallChainStepKind.InterfaceDispatch,
+                    results,
+                    seenCallKeys,
+                    options,
+                    cancellationToken);
+            }
+        }
+
+        // 3. Virtual / abstract base method callers (excluding System.Object)
+        if (options.FollowOverrides && targetMethod.OverriddenMethod != null && results.Count < options.MaxCallersPerMethod)
+        {
+            var baseMethod = targetMethod.OverriddenMethod;
+            var baseDepth = 0;
+            while (baseMethod != null && baseDepth < 2 && results.Count < options.MaxCallersPerMethod)
+            {
+                var containingType = baseMethod.ContainingType;
+                if (containingType?.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType)
+                    break;
+
+                if (IsSymbolInSystemNameSpace(containingType))
+                    break;
+
+                await CollectCallersForSymbolAsync(
+                    solution,
+                    baseMethod,
+                    targetMethod,
+                    CallChainStepKind.VirtualOverrideDispatch,
+                    results,
+                    seenCallKeys,
+                    options,
+                    cancellationToken);
+
+                baseMethod = baseMethod.OverriddenMethod;
+                baseDepth++;
+            }
+        }
+
+        _cache[targetMethod] = results;
+        return results;
+    }
+
+    private bool IsSymbolInSystemNameSpace(ISymbol? symbol)
+    {
+        var nameSpace = symbol?.ContainingNamespace?.ToDisplayString();
+        return nameSpace != null && (nameSpace.StartsWith("System.") || nameSpace == "System");
+    }
+
+    private async Task CollectCallersForSymbolAsync(
+        Solution solution,
+        IMethodSymbol symbolToFindCallersFor,
+        IMethodSymbol actualTargetCallee,
+        CallChainStepKind stepKind,
+        List<DiscoveredCaller> results,
+        HashSet<string> seenCallKeys,
+        CoverageSearchOptions options,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var candidateDocs = GetCandidateDocuments(solution, symbolToFindCallersFor);
+            var callers = await SymbolFinder.FindCallersAsync(
+                symbolToFindCallersFor,
+                solution,
+                documents: candidateDocs,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            foreach (var callerInfo in callers)
+            {
+                if (cancellationToken.IsCancellationRequested || results.Count >= options.MaxCallersPerMethod)
+                    break;
+
+                var callerMethod = UnwrapToMethodSymbol(callerInfo.CallingSymbol);
+                if (callerMethod == null)
+                    continue;
+
+                foreach (var location in callerInfo.Locations)
+                {
+                    if (results.Count >= options.MaxCallersPerMethod)
+                        break;
+
+                    var lineSpan = location.GetLineSpan();
+                    var filePath = lineSpan.Path;
+                    var lineNumber = lineSpan.StartLinePosition.Line + 1;
+
+                    var key = $"{callerMethod.ToDisplayString()}|{filePath}|{lineNumber}|{actualTargetCallee.ToDisplayString()}";
+                    if (!seenCallKeys.Add(key))
+                        continue;
+
+                    string? snippet = null;
+                    if (location.SourceTree != null)
+                    {
+                        var text = await location.SourceTree.GetTextAsync(cancellationToken).ConfigureAwait(false);
+                        var lineIndex = lineSpan.StartLinePosition.Line;
+                        if (lineIndex >= 0 && lineIndex < text.Lines.Count)
+                            snippet = text.Lines[lineIndex].ToString().Trim();
+                    }
+
+                    results.Add(new DiscoveredCaller
+                    {
+                        CallerSymbol = callerMethod,
+                        CalleeSymbol = actualTargetCallee,
+                        FilePath = filePath,
+                        LineNumber = lineNumber,
+                        CodeSnippet = snippet,
+                        StepKind = stepKind
+                    });
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Error finding callers for symbol {Symbol}", symbolToFindCallersFor.ToDisplayString());
+        }
+    }
+
+    /// <summary>
+    /// Ограничивает область поиска только проектами, зависящими от сборки целевого символа.
+    /// Это дает колоссальное ускорение в крупных решениях с сотнями проектов.
+    /// </summary>
+    private static ImmutableHashSet<Document>? GetCandidateDocuments(
+        Solution solution,
+        IMethodSymbol symbol)
+    {
+        var assemblyName = symbol.ContainingAssembly?.Name;
+        if (string.IsNullOrEmpty(assemblyName))
+            return null;
+
+        var declaringProjects = solution.Projects
+            .Where(p => string.Equals(p.AssemblyName, assemblyName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (declaringProjects.Count == 0)
+            return null;
+
+        var dependencyGraph = solution.GetProjectDependencyGraph();
+        var relevantProjectIds = new HashSet<ProjectId>();
+
+        foreach (var declaringProject in declaringProjects)
+        {
+            relevantProjectIds.Add(declaringProject.Id);
+            foreach (var depId in dependencyGraph.GetProjectsThatTransitivelyDependOnThisProject(declaringProject.Id))
+                relevantProjectIds.Add(depId);
+        }
+
+        var builder = ImmutableHashSet.CreateBuilder<Document>();
+        foreach (var projId in relevantProjectIds)
+        {
+            var project = solution.GetProject(projId);
+            if (project == null)
+                continue;
+
+            foreach (var doc in project.Documents)
+                builder.Add(doc);
+        }
+
+        return builder.ToImmutable();
+    }
+
+    /// <summary>
+    /// Разворачивает локальные функции, анонимные методы и лямбды до их охватывающего метода.
+    /// </summary>
+    private static IMethodSymbol? UnwrapToMethodSymbol(ISymbol symbol)
+    {
+        var current = symbol;
+        while (current != null)
+        {
+            if (current is IMethodSymbol method)
+            {
+                // Если это нормальный метод или геттер/сеттер свойства
+                if (method.MethodKind is MethodKind.Ordinary
+                    or MethodKind.PropertyGet
+                    or MethodKind.PropertySet
+                    or MethodKind.Constructor
+                    or MethodKind.StaticConstructor)
+                {
+                    return method;
+                }
+
+                // Если это локальная функция или лямбда, поднимаемся выше
+                if (method.MethodKind is MethodKind.LocalFunction
+                    or MethodKind.AnonymousFunction)
+                {
+                    current = method.ContainingSymbol;
+                    continue;
+                }
+
+                return method;
+            }
+
+            if (current is IPropertySymbol prop)
+                return prop.GetMethod ?? prop.SetMethod;
+
+            current = current.ContainingSymbol;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Возвращает все методы интерфейсов (явные и неявные), которые реализует данный метод.
+    /// </summary>
+    private static IEnumerable<IMethodSymbol> GetImplementedInterfaceMethods(IMethodSymbol method)
+    {
+        // 1. Явно реализованные методы интерфейсов
+        foreach (var explicitImpl in method.ExplicitInterfaceImplementations)
+            yield return explicitImpl;
+
+        // 2. Неявно реализованные методы интерфейсов
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            yield break;
+
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            foreach (var ifaceMember in iface.GetMembers().OfType<IMethodSymbol>())
+            {
+                var impl = containingType.FindImplementationForInterfaceMember(ifaceMember);
+                if (SymbolEqualityComparer.Default.Equals(impl, method))
+                    yield return ifaceMember;
+            }
+        }
+    }
+}
+
