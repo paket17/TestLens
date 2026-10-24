@@ -1,77 +1,79 @@
 # TestLens 🧪🔍
 
-Инструмент статического анализа на базе **.NET Roslyn** для поиска и запуска автоматизированных тестов, покрывающих конкретный метод C#-кода — с полной поддержкой косвенных вызовов любой глубины, интерфейсного диспетчеризирования, полиморфных переопределений и различных тестовых фреймворков.
+[🇷🇺 Читать на русском](README.ru.md)
+
+A static analysis tool powered by **.NET Roslyn** for discovering and running automated tests that cover a specific C# method — featuring full support for indirect call chains of arbitrary depth, interface dispatch, polymorphic overrides, and various test frameworks.
 
 ---
 
-## 📌 Возможности
+## 📌 Features
 
-- **Поиск тестов по цепочке вызовов (Inverted Call Graph BFS):**
-  - Обнаруживает не только прямые вызовы, но и косвенные через промежуточные сервисы/хэндлеры любой глубины (1, 2, 3+ уровней).
-  - Распознает вызовы интерфейсов (`IFoo.Bar()` -> `Foo.Bar()`).
-  - Учитывает виртуальные переопределения базовых классов (`override`).
-  - Разматывает лямбды, делегаты и локальные функции к их содержащим методам.
-  - Защита от зацикливаний и взаимной рекурсии в графе вызовов.
-- **Поддержка тестовых фреймворков:**
+- **Test Discovery via Inverted Call Graph BFS:**
+  - Detects not only direct invocations, but also indirect call chains through intermediate services and handlers of any depth (1, 2, 3+ levels).
+  - Resolves interface dispatch (`IFoo.Bar()` -> `Foo.Bar()`).
+  - Accounts for virtual method overrides in derived classes (`override`).
+  - Unwinds lambdas, delegates, and local functions back to their enclosing methods.
+  - Cycle detection and recursion protection in call graphs.
+- **Supported Test Frameworks:**
   - **xUnit** (`[Fact]`, `[Theory]`)
   - **NUnit** (`[Test]`, `[TestCase]`, `[TestCaseSource]`)
   - **MSTest** (`[TestMethod]`, `[DataTestMethod]`)
-  - Поддержка атрибутов `DisplayName` и расширяемость через паттерн детекторов.
+  - Supports `DisplayName` attributes and extensibility via a detector pattern.
 - **Visual Studio 2022 / 2026 Extension (VSIX):**
-  - Пункт в контекстном меню редактора C# кода: `TestLens: Find Covering Tests...`.
-  - Отдельное окно инструментов (**Tool Window**):
-    - Статусный бейдж: **COVERED** (зеленый), **NOT COVERED** (красный), нейтральный во время поиска.
-    - Кнопка **🔄 Refresh (Обновить)**: повторный запуск анализа текущего метода (например, после изменения кода). Во время поиска кнопка превращается в **⏹ Stop** с сохранением уже найденных результатов.
-    - Кнопки **▶ Запуск** для каждого отдельного теста и **▶ Запустить все** с выводом прогресса в Visual Studio Output Window (во время запуска теста кнопка превращается в **⏹ Stop**).
-    - Дерево иерархии вызовов со сниппетами строк кода и номерами строк.
-- **CLI Утилита (TestLens.Cli):**
-  - Автономный запуск в терминале или CI/CD.
-  - Цветной вывод дерева вызовов.
-  - Флаг `--json` для программной интеграции (например, расширения для **VS Code**).
-  - Флаг `--run` для немедленного выполнения найденных тестов через `dotnet test`.
-- **Архитектура (Pure DI / Clean Architecture):**
-  - Ядро `TestLens.Core` независимо от среды IDE (`netstandard2.0`, `net10.0`).
-  - Быстрый и прозрачный **Pure DI** (`TestLensServices`): статические фабрики с возможностью внедрения моков/кастомных реализаций без тяжелых IoC-контейнеров и рефлексии.
+  - Context menu item in the C# code editor: `TestLens: Find Covering Tests...`.
+  - Dedicated **Tool Window**:
+    - Status badge: **COVERED** (green), **NOT COVERED** (red), neutral during search.
+    - **🔄 Refresh** button: re-run analysis for the current method (e.g. after modifying code). During analysis, the button transforms into **⏹ Stop**, preserving matches found so far.
+    - **▶ Run** buttons for each individual test and **▶ Run All** with live progress logged to the Visual Studio Output Window (during test execution, the button switches to **⏹ Stop**).
+    - Call hierarchy tree with code snippets and line numbers.
+- **CLI Utility (TestLens.Cli):**
+  - Standalone execution in terminal or CI/CD pipelines.
+  - Colored call tree output.
+  - `--json` flag for programmatic integration (e.g., extensions for **VS Code**).
+  - `--run` flag for immediate execution of discovered tests via `dotnet test`.
+- **Architecture (Pure DI / Clean Architecture):**
+  - Core library `TestLens.Core` is IDE-independent (`netstandard2.0`, `net10.0`).
+  - Fast, transparent **Pure DI** (`TestLensServices`): static factories allowing mock injection and custom implementations without heavy IoC containers or reflection overhead.
 
 ---
 
-## 🏛️ Структура проекта
+## 🏛️ Project Structure
 
 ```
 TestLens/
 ├── src/
-│   ├── TestLens.Core/                  # Библиотека анализа и поиска тестов (netstandard2.0, net10.0)
-│   │   ├── Analysis/                   # Обходчик графа вызовов (RoslynInvertedCallGraphWalker, CallerResolver)
-│   │   ├── Compatibility/              # Полифилы совместимости для netstandard2.0 (WaitForExitAsync)
-│   │   ├── Detection/                  # Детекторы тестов (xUnit, NUnit, MSTest, Composite)
-│   │   ├── Execution/                  # Раннер тестов (DotNetCliTestRunner)
-│   │   ├── Models/                     # Модели данных (MethodCoverageResult, CallChain, CoveringTestMatch)
-│   │   └── TestLensServices.cs         # Pure DI фабрика создания сервисов
+│   ├── TestLens.Core/                  # Core test discovery and analysis library (netstandard2.0, net10.0)
+│   │   ├── Analysis/                   # Call graph traversal (RoslynInvertedCallGraphWalker, CallerResolver)
+│   │   ├── Compatibility/              # netstandard2.0 compatibility polyfills (WaitForExitAsync)
+│   │   ├── Detection/                  # Test detectors (xUnit, NUnit, MSTest, Composite)
+│   │   ├── Execution/                  # Test execution runner (DotNetCliTestRunner)
+│   │   ├── Models/                     # Data models (MethodCoverageResult, CallChain, CoveringTestMatch)
+│   │   └── TestLensServices.cs         # Pure DI service factory
 │   │
-│   ├── TestLens.Cli/                   # Консольное приложение для поиска и запуска тестов (net10.0)
-│   │   └── Program.cs                  # Загрузка MSBuildWorkspace, CLI интерфейс, вывод JSON
+│   ├── TestLens.Cli/                   # CLI console application for finding and running tests (net10.0)
+│   │   └── Program.cs                  # MSBuildWorkspace loading, CLI interface, JSON serialization
 │   │
-│   └── TestLens.Vsix/                  # Расширение для Visual Studio 2022 / 2026 (.NET Framework 4.8)
-│       ├── Commands/                   # Команда контекстного меню (FindCoveringTestsCommand)
-│       ├── ToolWindows/                # Окно TestLensToolWindow + WPF контрол
-│       ├── ViewModels/                 # MVVM ViewModel дерева тестов и цепочек вызовов
-│       └── VSCommandTable.vsct         # Регистрация меню в редакторе кода
+│   └── TestLens.Vsix/                  # Extension for Visual Studio 2022 / 2026 (.NET Framework 4.8)
+│       ├── Commands/                   # Context menu command (FindCoveringTestsCommand)
+│       ├── ToolWindows/                # Tool window TestLensToolWindow + WPF control
+│       ├── ViewModels/                 # MVVM ViewModel for test tree and call chains
+│       └── VSCommandTable.vsct         # Code editor menu registration
 │
 └── tests/
-    └── TestLens.Core.Tests/            # Модульные тесты ядра (15 тестов xUnit)
+    └── TestLens.Core.Tests/            # Core unit tests (15 xUnit tests)
 ```
 
 ---
 
-## 🚀 Использование CLI
+## 🚀 CLI Usage
 
-### Примеры запуска на решении TestLens.sln
+### Examples on TestLens.sln
 
-#### 1. Метод, покрытый тестами (с флагом `-r` для их немедленного запуска):
+#### 1. Method covered by tests (using `-r` flag to run them immediately):
 ```bash
 dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m CreateWorkspaceFromSource -r
 ```
-> **Результат:** находит 9 покрывающих тестов xUnit из `TestLens.Core.Tests`, выводит дерево цепочек вызовов и запускает их через `dotnet test`:
+> **Result:** Finds 9 covering xUnit tests from `TestLens.Core.Tests`, displays the call chain tree, and executes them via `dotnet test`:
 > ```
 > Target method: TestLens.Core.Tests.Helpers.TestWorkspaceHelper.CreateWorkspaceFromSource
 > Coverage status: COVERED (found 9 test(s))
@@ -79,70 +81,70 @@ dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m CreateWorkspaceFromS
 > ✓ ALL TESTS PASSED! (Passed: 9, Duration: 4.86s)
 > ```
 
-#### 2. Метод, не покрытый тестами:
+#### 2. Method not covered by tests:
 ```bash
 dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m PrintBanner
 ```
-> **Результат:**
+> **Result:**
 > ```
 > Target method: TestLens.Cli.Program.PrintBanner
 > File: D:\Repos\TestLens\src\TestLens.Cli\Program.cs:158
 > Coverage status: NOT COVERED BY TESTS (0 calls from tests found)
 > ```
 
-#### 3. Вывод в формате JSON (для автоматизации и интеграций):
+#### 3. Output in JSON format (for automation and integrations):
 ```bash
 dotnet run --project src/TestLens.Cli -- -s TestLens.sln -m CreateWorkspaceFromSource --json
 ```
 
-> **💡 Зачем нужны два тире `--` перед аргументами в `dotnet run`?**  
-> В CLI-команде `dotnet run` двойное тире `--` является стандартным разделителем (POSIX argument delimiter).  
-> Оно говорит самой команде `dotnet run`: *"Здесь заканчиваются параметры dotnet run (например, `--project`, `--configuration`). Все последующие аргументы передай напрямую в программу `TestLens.Cli` в массив `args[]`"*.  
-> Без этого разделителя `dotnet run` попытался бы интерпретировать флаги приложения (например, `-s` или `-r`) как свои собственные.  
-> Если запускать скомпилированный бинарник напрямую (или через `dotnet TestLens.Cli.dll`), разделитель `--` указывать не нужно:  
+> **💡 Why are double dashes `--` needed before arguments in `dotnet run`?**  
+> In the `dotnet run` CLI command, the double dash `--` is the standard POSIX argument delimiter.  
+> It tells `dotnet run`: *"Options for `dotnet run` itself (e.g. `--project`, `--configuration`) end here. Pass all subsequent arguments directly to `TestLens.Cli` in `args[]`"*.  
+> Without this delimiter, `dotnet run` would attempt to interpret application flags (such as `-s` or `-r`) as its own parameters.  
+> When executing the compiled binary directly (or via `dotnet TestLens.Cli.dll`), the `--` delimiter is not required:  
 > `TestLens.Cli.exe -s TestLens.sln -m CreateWorkspaceFromSource -r`
 
 ---
 
-## 💻 Сборка, установка и использование расширения для Visual Studio
+## 💻 Building, Installing, and Using the Visual Studio Extension
 
-### 📦 Необходимые компоненты для сборки (Prerequisites)
-Для сборки VSIX-проекта требуются компоненты Visual Studio (2022 или 2026):
-- Рабочая нагрузка **«Разработка расширений Visual Studio»** (*Visual Studio extension development*).
-- Пакет целевой платформы **.NET Framework 4.8 Targeting Pack / Developer Pack**.
-
----
-
-### 🔨 Как собрать VSIX-расширение
-
-Версия расширения указывается в файле `source.extension.vsixmanifest`
-
-Файл `.vsix` упаковывается автоматически при обычной сборке проекта
+### 📦 Prerequisites for Building
+To build the VSIX project, Visual Studio components (2022 or 2026) are required:
+- Workload: **Visual Studio extension development**.
+- Targeting / Developer Pack: **.NET Framework 4.8 Targeting Pack / Developer Pack**.
 
 ---
 
-### 📥 Установка собранного расширения
-1. Обязательно **закройте все открытые окна Visual Studio**.
-2. В Проводнике дважды кликните по сгенерированному файлу `src/TestLens.Vsix/TestLens.vsix`.
-3. В окне **VSIX Installer** подтвердите установку в нужные версии Visual Studio (2022/2026), нажав кнопку **Install** (или **Modify**).
-4. Запустите Visual Studio.
+### 🔨 How to Build the VSIX Extension
+
+The extension version is specified in `source.extension.vsixmanifest`.
+
+The `.vsix` file is automatically packaged during a standard project build.
 
 ---
 
-### 🎯 Использование расширения в редакторе кода:
-1. Откройте любой C# файл и установите курсор на сигнатуру или внутри тела метода.
-2. Нажмите правой кнопкой мыши и выберите **"TestLens: Find Covering Tests..."** (также панель можно открыть через меню `Вид ➔ Другие окна ➔ TestLens Window`).  
-   *(Если курсор установлен вне метода, всплывающие окна не блокируют работу — в статусной строке панели отобразится подсказка: `Place the caret inside a method declaration...`).*
-3. В открывшейся панели отобразится:
-   - Статус покрытия: **COVERED** (зеленый) или **NOT COVERED** (красный).
-   - Список тестов (xUnit, NUnit, MSTest), обновляемый в реальном времени во время анализа.
-   - Дерево вызовов от тестового метода до целевого метода со сниппетами строк кода.
-   - Кнопка **🔄 Refresh**: повторный запуск поиска тестов для текущего метода (во время поиска превращается в **⏹ Stop** для прерывания).
-   - Кнопки запуска тестов (**▶ Запуск** для одного теста / **▶ Запустить все**), которые во время выполнения также превращаются в **⏹ Stop** для остановки.
+### 📥 Installing the Built Extension
+1. Be sure to **close all open Visual Studio windows**.
+2. In File Explorer, double-click the generated `src/TestLens.Vsix/TestLens.vsix` file.
+3. In the **VSIX Installer** window, confirm installation to the desired Visual Studio versions (2022/2026) by clicking **Install** (or **Modify**).
+4. Launch Visual Studio.
 
 ---
 
-## 🧪 Запуск модульных тестов
+### 🎯 Using the Extension in the Code Editor:
+1. Open any C# file and place the caret on a method signature or inside its body.
+2. Right-click and choose **"TestLens: Find Covering Tests..."** (the tool window can also be opened via `View ➔ Other Windows ➔ TestLens Window`).  
+   *(If the caret is outside a method, no blocking modal popups appear — the tool window status bar simply displays a hint: `Place the caret inside a method declaration...`).*
+3. The opened panel displays:
+   - Coverage status: **COVERED** (green) or **NOT COVERED** (red).
+   - Test list (xUnit, NUnit, MSTest) updating in real time during analysis.
+   - Call hierarchy tree leading from the test method down to the target method with line snippets.
+   - **🔄 Refresh** button: re-run test discovery for the current method (switches to **⏹ Stop** during search to cancel).
+   - Test execution buttons (**▶ Run** for an individual test / **▶ Run All**), which also toggle to **⏹ Stop** during execution to allow cancellation.
+
+---
+
+## 🧪 Running Unit Tests
 
 ```bash
 dotnet test TestLens.sln
